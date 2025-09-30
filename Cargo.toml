@@ -15,7 +15,7 @@ ratatui = { version = "0.29.0", features = ["all-widgets", "unstable-rendered-li
 rayon = "1.10.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140", features = ["preserve_order"] }
-sonic-rs = "0.5.1"
+sonic-rs = "0.5.5"
 thiserror = "2.0.12"
 toml = "0.8.23"
 
