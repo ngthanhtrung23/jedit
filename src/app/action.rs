@@ -25,6 +25,29 @@ impl From<PreviewNavigationAction> for WorkSpaceAction {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq))]
+pub enum SearchAction {
+    Start,
+    Input(char),
+    Backspace,
+    Confirm,
+    Cancel,
+    Next,
+}
+
+impl From<SearchAction> for Action {
+    fn from(value: SearchAction) -> Self {
+        NavigationAction::Search(value).into()
+    }
+}
+
+impl From<SearchAction> for WorkSpaceAction {
+    fn from(value: SearchAction) -> Self {
+        NavigationAction::Search(value).into()
+    }
+}
+
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq, Clone, Copy))]
 pub enum NavigationAction {
@@ -38,6 +61,7 @@ pub enum NavigationAction {
     TogglePreview,
     PreviewNavigation(PreviewNavigationAction),
     PreviewWindowResize(Op),
+    Search(SearchAction),
 }
 
 impl From<NavigationAction> for Action {

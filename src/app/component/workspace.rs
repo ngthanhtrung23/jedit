@@ -20,7 +20,7 @@ use crate::{
         Action, Actions,
         action::{
             ConfirmAction, EditJobAction, JobAction, NavigationAction, PreviewNavigationAction,
-            WorkSpaceAction,
+            SearchAction, WorkSpaceAction,
         },
         component::confirm_dialog::{
             error_confirm_dialog::ErrorConfirmDialog, text_confirm_dialog::TextConfirmDialog,
@@ -35,7 +35,7 @@ use crate::{
 use super::{
     confirm_dialog::{ConfirmDialog, boolean_confirm_dialog::BooleanConfirmDialog},
     loading::Loading,
-    preview::{Preview, PreviewState},
+    preview::{Preview, PreviewState, SearchState},
     scrollbar::scrollbar,
 };
 
@@ -51,6 +51,7 @@ pub struct WorkSpace {
     preview: Option<Preview>,
     preview_pct: u16,
     loading: Option<Loading>,
+    search_active: bool,
 }
 
 impl WorkSpace {
@@ -68,6 +69,7 @@ impl WorkSpace {
             preview: None,
             preview_pct: 65,
             loading: None,
+            search_active: false,
         }
     }
 
@@ -84,6 +86,17 @@ impl WorkSpace {
         let Some(event) = event.as_key_press_event() else {
             return;
         };
+
+        if self.search_active {
+            match event.code {
+                KeyCode::Char(c) => actions.push(SearchAction::Input(c).into()),
+                KeyCode::Backspace => actions.push(SearchAction::Backspace.into()),
+                KeyCode::Enter => actions.push(SearchAction::Confirm.into()),
+                KeyCode::Esc => actions.push(SearchAction::Cancel.into()),
+                _ => {}
+            }
+            return;
+        }
 
         if event.modifiers == KeyModifiers::CONTROL {
             match event.code {
@@ -123,8 +136,14 @@ impl WorkSpace {
             KeyCode::Char('j') | KeyCode::Down => {
                 actions.push(NavigationAction::Down(1).into());
             }
-            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Tab => {
+            KeyCode::Char('l') | KeyCode::Char(' ') | KeyCode::Tab => {
                 actions.push(NavigationAction::Expand.into());
+            }
+            KeyCode::Enter => {
+                actions.push(SearchAction::Next.into());
+            }
+            KeyCode::Char('/') => {
+                actions.push(SearchAction::Start.into());
             }
             KeyCode::Char('h') => {
                 actions.push(NavigationAction::Close.into());
@@ -303,6 +322,9 @@ impl WorkSpace {
             NavigationAction::PreviewWindowResize(delta) => {
                 self.preview_pct = delta.exec(self.preview_pct).clamp(20, 80)
             }
+            NavigationAction::Search(action) => {
+                self.handle_search_action(state, action);
+            }
         }
 
         if prev_index != state.list_state.selected() {
@@ -343,7 +365,7 @@ impl WorkSpace {
         Ok(())
     }
 
-    fn replace_selected(&mut self, worktree_state: &WorkSpaceState, new_node: Node) {
+    fn replace_selected(&mut self, worktree_state: &mut WorkSpaceState, new_node: Node) {
         let Some(index) = worktree_state.list_state.selected() else {
             return;
         };
@@ -362,19 +384,24 @@ impl WorkSpace {
         self.list = new_list(&self.work_tree_root);
     }
 
-    fn toggle_preview(&mut self, state: &WorkSpaceState) {
+    fn toggle_preview(&mut self, state: &mut WorkSpaceState) {
         if self.preview.is_some() {
             self.preview = None;
+            state.preview_state.clear_search();
+            self.search_active = false;
             return;
         }
 
         self.set_preview_to_selected(state, true);
     }
 
-    fn set_preview_to_selected(&mut self, state: &WorkSpaceState, force_show: bool) {
+    fn set_preview_to_selected(&mut self, state: &mut WorkSpaceState, force_show: bool) {
         if self.preview.is_none() && !force_show {
             return;
         }
+
+        state.preview_state.clear_search();
+        self.search_active = false;
 
         let Some(index) = state.list_state.selected() else {
             return;
@@ -407,6 +434,94 @@ impl WorkSpace {
 
     pub fn file_root(&self) -> &Node {
         &self.file_root
+    }
+
+    fn handle_search_action(&mut self, state: &mut WorkSpaceState, action: SearchAction) {
+        match action {
+            SearchAction::Start => {
+                if self.preview.is_some() {
+                    self.search_active = true;
+                    state.preview_state.search = Some(SearchState {
+                        query: String::new(),
+                        is_input_mode: true,
+                        matches: Vec::new(),
+                        current_match: 0,
+                    });
+                }
+            }
+            SearchAction::Input(c) => {
+                if let Some(search) = &mut state.preview_state.search {
+                    search.query.push(c);
+                }
+            }
+            SearchAction::Backspace => {
+                if let Some(search) = &mut state.preview_state.search {
+                    search.query.pop();
+                }
+            }
+            SearchAction::Confirm => {
+                self.search_active = false;
+                if let Some(search) = &mut state.preview_state.search {
+                    search.is_input_mode = false;
+                }
+                self.execute_search(state);
+            }
+            SearchAction::Cancel => {
+                self.search_active = false;
+                state.preview_state.clear_search();
+            }
+            SearchAction::Next => {
+                let line = state.preview_state.search.as_mut().and_then(|search| {
+                    if search.matches.is_empty() {
+                        return None;
+                    }
+                    search.current_match =
+                        (search.current_match + 1) % search.matches.len();
+                    let (line_idx, _) = search.matches[search.current_match];
+                    Some(line_idx as u16)
+                });
+                if let Some(line) = line {
+                    state.preview_state.set_y_offset(line);
+                }
+            }
+        }
+    }
+
+    fn execute_search(&mut self, state: &mut WorkSpaceState) {
+        let query = state
+            .preview_state
+            .search
+            .as_ref()
+            .map(|s| s.query.clone())
+            .unwrap_or_default();
+        if query.is_empty() {
+            state.preview_state.clear_search();
+            return;
+        }
+
+        let text = self
+            .preview
+            .as_ref()
+            .and_then(|p| p.content_text())
+            .unwrap_or_default();
+
+        let mut matches = Vec::new();
+        for (line_idx, line) in text.lines().enumerate() {
+            let mut start = 0;
+            while let Some(pos) = line[start..].find(&query) {
+                matches.push((line_idx, start + pos));
+                start += pos + query.len();
+            }
+        }
+
+        let first_line = matches.first().map(|&(line_idx, _)| line_idx as u16);
+        if let Some(search) = &mut state.preview_state.search {
+            search.matches = matches;
+            search.current_match = 0;
+        }
+        if let Some(line) = first_line {
+            state.preview_state.set_y_offset(line);
+        }
     }
 }
 
@@ -798,10 +913,6 @@ mod test {
                 NavigationAction::Down(10),
             ),
             (
-                (KeyCode::Enter, KeyModifiers::NONE),
-                NavigationAction::Expand,
-            ),
-            (
                 (KeyCode::Char('l'), KeyModifiers::NONE),
                 NavigationAction::Expand,
             ),
@@ -856,6 +967,14 @@ mod test {
             (
                 (KeyCode::Right, KeyModifiers::CONTROL),
                 NavigationAction::PreviewWindowResize(Op::Sub(1)),
+            ),
+            (
+                (KeyCode::Enter, KeyModifiers::NONE),
+                NavigationAction::Search(SearchAction::Next),
+            ),
+            (
+                (KeyCode::Char('/'), KeyModifiers::NONE),
+                NavigationAction::Search(SearchAction::Start),
             ),
         ] {
             assert_key_event_to_action(&worktree, key, vec![action.into()]);
@@ -1852,6 +1971,114 @@ mod test {
         worktree.test_action(&mut state, NavigationAction::CloseOrCloseParent.into());
         assert_eq!(state.list_state.selected(), Some(2));
         assert!(!worktree.work_tree_root.is_expanded(2));
+    }
+
+    #[test]
+    fn search_event_routing_test() {
+        let json = String::from("123");
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        worktree.search_active = true;
+
+        for (key, action) in [
+            (
+                (KeyCode::Char('a'), KeyModifiers::NONE),
+                SearchAction::Input('a'),
+            ),
+            (
+                (KeyCode::Char('z'), KeyModifiers::NONE),
+                SearchAction::Input('z'),
+            ),
+            (
+                (KeyCode::Backspace, KeyModifiers::NONE),
+                SearchAction::Backspace,
+            ),
+            (
+                (KeyCode::Enter, KeyModifiers::NONE),
+                SearchAction::Confirm,
+            ),
+            ((KeyCode::Esc, KeyModifiers::NONE), SearchAction::Cancel),
+        ] {
+            assert_key_event_to_action(&worktree, key, vec![action.into()]);
+        }
+
+        // Verify normal keys are NOT routed when search_active
+        assert_key_event_to_action(
+            &worktree,
+            (KeyCode::Char('q'), KeyModifiers::NONE),
+            vec![SearchAction::Input('q').into()],
+        );
+    }
+
+    #[test]
+    fn handle_search_test() {
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "key": "value",
+            "array": [1, 2, ["cat", "dog"]]
+        }))
+        .unwrap();
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        // Enable preview
+        worktree.test_action(&mut state, NavigationAction::TogglePreview.into());
+
+        // Start search
+        worktree.test_action(&mut state, SearchAction::Start.into());
+        assert!(worktree.search_active);
+        assert!(state.preview_state.search.as_ref().unwrap().is_input_mode);
+
+        // Input chars
+        worktree.test_action(&mut state, SearchAction::Input('c').into());
+        worktree.test_action(&mut state, SearchAction::Input('a').into());
+        worktree.test_action(&mut state, SearchAction::Input('t').into());
+        assert_eq!(state.preview_state.search.as_ref().unwrap().query, "cat");
+
+        // Backspace
+        worktree.test_action(&mut state, SearchAction::Backspace.into());
+        assert_eq!(state.preview_state.search.as_ref().unwrap().query, "ca");
+
+        // Re-add and confirm
+        worktree.test_action(&mut state, SearchAction::Input('t').into());
+        worktree.test_action(&mut state, SearchAction::Confirm.into());
+        assert!(!worktree.search_active);
+        let search = state.preview_state.search.as_ref().unwrap();
+        assert!(!search.is_input_mode);
+        assert!(!search.matches.is_empty());
+        assert_eq!(search.current_match, 0);
+
+        // Snapshot with search highlights
+        assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
+
+        // Next cycles through matches
+        worktree.test_action(&mut state, SearchAction::Next.into());
+        let search = state.preview_state.search.as_ref().unwrap();
+        assert_eq!(search.current_match, 1 % search.matches.len());
+
+        // Cancel clears search
+        worktree.test_action(&mut state, SearchAction::Start.into());
+        worktree.test_action(&mut state, SearchAction::Cancel.into());
+        assert!(!worktree.search_active);
+        assert!(state.preview_state.search.is_none());
+    }
+
+    #[test]
+    fn render_search_bar_test() {
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "key": "value",
+            "array": [1, 2, ["cat", "dog"]]
+        }))
+        .unwrap();
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, NavigationAction::TogglePreview.into());
+        worktree.test_action(&mut state, SearchAction::Start.into());
+        worktree.test_action(&mut state, SearchAction::Input('v').into());
+        worktree.test_action(&mut state, SearchAction::Input('a').into());
+        worktree.test_action(&mut state, SearchAction::Input('l').into());
+
+        // Snapshot showing search bar with /val█
+        assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
     }
 
     fn assert_key_event_to_action(

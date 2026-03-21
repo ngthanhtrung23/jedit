@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Flex, Layout, Rect},
-    style::{Style, Stylize},
+    style::{Color, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{
         Block, Padding, Paragraph, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget,
@@ -13,9 +13,18 @@ use crate::app::math::Op;
 use super::scrollbar::scrollbar;
 
 #[derive(Debug, Default)]
+pub(crate) struct SearchState {
+    pub query: String,
+    pub is_input_mode: bool,
+    pub matches: Vec<(usize, usize)>,
+    pub current_match: usize,
+}
+
+#[derive(Debug, Default)]
 pub struct PreviewState {
     x_offset: u16,
     y_offset: u16,
+    pub(crate) search: Option<SearchState>,
 }
 
 impl PreviewState {
@@ -34,6 +43,14 @@ impl PreviewState {
     pub fn scroll_right(&mut self) {
         self.x_offset = Op::Add(1).exec(self.x_offset);
     }
+
+    pub(crate) fn set_y_offset(&mut self, offset: u16) {
+        self.y_offset = offset;
+    }
+
+    pub(crate) fn clear_search(&mut self) {
+        self.search = None;
+    }
 }
 
 pub struct Preview {
@@ -46,16 +63,33 @@ impl Preview {
             content: content.map(Content::new),
         }
     }
+
+    pub(crate) fn content_text(&self) -> Option<&str> {
+        self.content.as_ref().map(|c| c.text.as_str())
+    }
 }
 
 impl StatefulWidget for &Preview {
     type State = PreviewState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let is_search_input = state
+            .search
+            .as_ref()
+            .is_some_and(|s| s.is_input_mode);
+
+        let (block_area, search_bar_y) = if is_search_input && area.height > 2 {
+            let mut block_area = area;
+            block_area.height -= 1;
+            (block_area, Some(area.y + area.height - 1))
+        } else {
+            (area, None)
+        };
+
         let block = Block::bordered().title("Preview");
         let Some(content) = &self.content else {
-            let content_area = block.inner(area);
-            block.render(area, buf);
+            let content_area = block.inner(block_area);
+            block.render(block_area, buf);
             let paragraph = Paragraph::new(Line::from("Preview not available").centered());
             let height = paragraph.line_count(content_area.width);
             let vertical =
@@ -66,10 +100,10 @@ impl StatefulWidget for &Preview {
             return;
         };
 
-        let scrollbar_area = block.inner(area);
+        let scrollbar_area = block.inner(block_area);
         let block = block.padding(Padding::new(0, 2, 0, 2));
-        let mut content_area = block.inner(area);
-        block.render(area, buf);
+        let mut content_area = block.inner(block_area);
+        block.render(block_area, buf);
 
         let line_number_area = content_area;
         let n_digits = content.n_lines.to_string().len().max(3);
@@ -103,11 +137,71 @@ impl StatefulWidget for &Preview {
             .collect::<Text<'_>>()
             .render(line_number_area, buf);
 
-        let lines = content.text.lines().map(Line::from).collect::<Text>();
+        let lines: Text = if let Some(search) = &state.search {
+            if !search.matches.is_empty() && !search.query.is_empty() {
+                let current_match_style = Style::new().bg(Color::Rgb(100, 80, 0));
+                let other_match_style = Style::new().bg(Color::Rgb(60, 50, 0));
+                content
+                    .text
+                    .lines()
+                    .enumerate()
+                    .map(|(line_idx, line_str)| {
+                        let line_matches: Vec<usize> = search
+                            .matches
+                            .iter()
+                            .filter(|(li, _)| *li == line_idx)
+                            .map(|(_, bo)| *bo)
+                            .collect();
+                        if line_matches.is_empty() {
+                            return Line::from(line_str);
+                        }
+                        let query_len = search.query.len();
+                        let mut spans = Vec::new();
+                        let mut pos = 0;
+                        for &byte_offset in &line_matches {
+                            if byte_offset > pos {
+                                spans.push(Span::raw(&line_str[pos..byte_offset]));
+                            }
+                            let is_current = search.matches.get(search.current_match)
+                                == Some(&(line_idx, byte_offset));
+                            let style = if is_current {
+                                current_match_style
+                            } else {
+                                other_match_style
+                            };
+                            let end = (byte_offset + query_len).min(line_str.len());
+                            spans.push(Span::styled(&line_str[byte_offset..end], style));
+                            pos = end;
+                        }
+                        if pos < line_str.len() {
+                            spans.push(Span::raw(&line_str[pos..]));
+                        }
+                        Line::from(spans)
+                    })
+                    .collect::<Text>()
+            } else {
+                content.text.lines().map(Line::from).collect::<Text>()
+            }
+        } else {
+            content.text.lines().map(Line::from).collect::<Text>()
+        };
 
         Paragraph::new(lines)
             .scroll((state.y_offset, state.x_offset))
             .render(content_area, buf);
+
+        if let Some(search_y) = search_bar_y {
+            let search = state.search.as_ref().unwrap();
+            let search_x = area.x;
+            let max_width = area.width as usize;
+            let display = format!("/{}█", search.query);
+            let display = if display.len() > max_width {
+                &display[..max_width]
+            } else {
+                &display
+            };
+            buf.set_string(search_x, search_y, display, Style::new());
+        }
 
         if y_scroll_size > 0 {
             let mut scrollbar_area = scrollbar_area;
@@ -189,6 +283,7 @@ mod test {
                 &mut PreviewState {
                     x_offset: 0,
                     y_offset,
+                    ..Default::default()
                 }
             ));
         }
@@ -219,7 +314,8 @@ mod test {
                 &preview,
                 &mut PreviewState {
                     x_offset,
-                    y_offset: 0
+                    y_offset: 0,
+                    ..Default::default()
                 }
             ));
         }
