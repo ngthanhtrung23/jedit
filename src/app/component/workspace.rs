@@ -1111,19 +1111,40 @@ impl WorkSpace {
         StatefulWidget::render(&list, inner_area, buf, &mut temp_list_state);
         state.tree_view_offset = *temp_list_state.offset_mut();
 
-        if let Some(match_flat) = state.tree_search_match_index {
+        if let (Some(match_flat), Some(ts)) =
+            (state.tree_search_match_index, &self.tree_search_state)
+        {
             let windowed_match = entries
                 .iter()
                 .position(|e| e.real_index == Some(match_flat));
             if let Some(wm) = windowed_match {
-                if Some(wm) != windowed_selected {
-                    let offset = *temp_list_state.offset_mut();
-                    let visible_height = inner_area.height as usize;
-                    if wm >= offset && wm < offset + visible_height {
-                        let row_y = inner_area.y + (wm - offset) as u16;
+                let offset = *temp_list_state.offset_mut();
+                let visible_height = inner_area.height as usize;
+                if wm >= offset && wm < offset + visible_height {
+                    let row_y = inner_area.y + (wm - offset) as u16;
+                    let display = &entries[wm].display;
+                    let key_name = ts
+                        .matches
+                        .get(ts.current_match)
+                        .and_then(|path| path.last())
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
+                    let query_lower = ts.query.to_lowercase();
+                    let key_lower = key_name.to_lowercase();
+                    if let Some(byte_pos) = key_lower.find(&query_lower) {
+                        let pos_in_key = key_lower[..byte_pos].chars().count();
+                        let query_cols = ts.query.chars().count();
+                        // key_name is at the end of display; use char counts for columns
+                        let key_start_in_display =
+                            display.chars().count() - key_name.chars().count();
+                        // +2 for highlight_symbol ("  " or "> ")
+                        let col_start =
+                            inner_area.x + 2 + (key_start_in_display + pos_in_key) as u16;
+                        let col_end = (col_start + query_cols as u16)
+                            .min(inner_area.x + inner_area.width);
                         let match_style =
                             Style::new().bg(Color::Rgb(200, 150, 0)).fg(Color::Black);
-                        for x in inner_area.x..inner_area.x + inner_area.width {
+                        for x in col_start..col_end {
                             buf[(x, row_y)].set_style(match_style);
                         }
                     }
