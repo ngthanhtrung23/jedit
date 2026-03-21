@@ -281,6 +281,19 @@ impl WorkTreeNode {
         unreachable!()
     }
 
+    pub fn direct_children(&self, index: usize) -> Option<Vec<(usize, &str)>> {
+        self.traverse_node(index, &mut |_| {}, &mut |_| {}, |node| {
+            let children = node.child.as_ref()?;
+            let mut result = Vec::new();
+            let mut offset = 1;
+            for child in children {
+                result.push((index + offset, child.name.as_str()));
+                offset += child.len;
+            }
+            Some(result)
+        })
+    }
+
     pub fn parent_index(&self, target: usize) -> Option<usize> {
         if target == 0 {
             return None; // root has no parent
@@ -511,5 +524,44 @@ mod test {
         assert_eq!(node.parent_index(3), Some(1));
         assert_eq!(node.parent_index(4), Some(0));
         assert_eq!(node.parent_index(5), Some(0));
+    }
+
+    #[test]
+    fn direct_children_test() {
+        let mut node = WorkTreeNode::new_empty(String::from("root"));
+        node.reindex(
+            0,
+            Index {
+                meta: NodeMeta::null(),
+                kind: IndexKind::Object(vec![
+                    String::from("a"),
+                    String::from("b"),
+                    String::from("c"),
+                ]),
+            },
+            true,
+        );
+        node.reindex(
+            1,
+            Index {
+                meta: NodeMeta::null(),
+                kind: IndexKind::Object(vec![String::from("aa"), String::from("ab")]),
+            },
+            true,
+        );
+
+        // root (0) -> children: a(1), b(4), c(5)
+        let children = node.direct_children(0).unwrap();
+        assert_eq!(
+            children,
+            vec![(1, "a"), (4, "b"), (5, "c")]
+        );
+
+        // a (1) -> children: aa(2), ab(3)
+        let children = node.direct_children(1).unwrap();
+        assert_eq!(children, vec![(2, "aa"), (3, "ab")]);
+
+        // leaf node has no children
+        assert_eq!(node.direct_children(2), None);
     }
 }

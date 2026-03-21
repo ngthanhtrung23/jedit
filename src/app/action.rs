@@ -49,6 +49,30 @@ impl From<SearchAction> for WorkSpaceAction {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq))]
+pub enum TreeSearchAction {
+    Start,
+    Input(char),
+    Backspace,
+    Confirm,
+    Cancel,
+    Next,
+    Previous,
+}
+
+impl From<TreeSearchAction> for Action {
+    fn from(value: TreeSearchAction) -> Self {
+        NavigationAction::TreeSearch(value).into()
+    }
+}
+
+impl From<TreeSearchAction> for WorkSpaceAction {
+    fn from(value: TreeSearchAction) -> Self {
+        NavigationAction::TreeSearch(value).into()
+    }
+}
+
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq, Clone, Copy))]
 pub enum NavigationAction {
@@ -63,6 +87,7 @@ pub enum NavigationAction {
     PreviewNavigation(PreviewNavigationAction),
     PreviewWindowResize(Op),
     Search(SearchAction),
+    TreeSearch(TreeSearchAction),
 }
 
 impl From<NavigationAction> for Action {

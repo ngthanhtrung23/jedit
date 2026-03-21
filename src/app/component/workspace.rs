@@ -1,5 +1,6 @@
 mod worktree_node;
 
+use std::collections::VecDeque;
 use std::io::Write;
 
 use crossterm::event::{Event, KeyCode, KeyModifiers};
@@ -20,7 +21,7 @@ use crate::{
         Action, Actions,
         action::{
             ConfirmAction, EditJobAction, JobAction, NavigationAction, PreviewNavigationAction,
-            SearchAction, WorkSpaceAction,
+            SearchAction, TreeSearchAction, WorkSpaceAction,
         },
         component::confirm_dialog::{
             error_confirm_dialog::ErrorConfirmDialog, text_confirm_dialog::TextConfirmDialog,
@@ -39,6 +40,14 @@ use super::{
     scrollbar::scrollbar,
 };
 
+struct TreeSearchState {
+    query: String,
+    is_input_mode: bool,
+    bfs_queue: VecDeque<Vec<String>>,
+    matches: Vec<Vec<String>>,
+    current_match: usize,
+}
+
 pub struct WorkSpace {
     config: Config,
     file_root: Node,
@@ -53,6 +62,9 @@ pub struct WorkSpace {
     loading: Option<Loading>,
     search_active: bool,
     search_has_results: bool,
+    tree_search_active: bool,
+    tree_search_has_results: bool,
+    tree_search_state: Option<TreeSearchState>,
 }
 
 impl WorkSpace {
@@ -72,6 +84,9 @@ impl WorkSpace {
             loading: None,
             search_active: false,
             search_has_results: false,
+            tree_search_active: false,
+            tree_search_has_results: false,
+            tree_search_state: None,
         }
     }
 
@@ -95,6 +110,17 @@ impl WorkSpace {
                 KeyCode::Backspace => actions.push(SearchAction::Backspace.into()),
                 KeyCode::Enter => actions.push(SearchAction::Confirm.into()),
                 KeyCode::Esc => actions.push(SearchAction::Cancel.into()),
+                _ => {}
+            }
+            return;
+        }
+
+        if self.tree_search_active {
+            match event.code {
+                KeyCode::Char(c) => actions.push(TreeSearchAction::Input(c).into()),
+                KeyCode::Backspace => actions.push(TreeSearchAction::Backspace.into()),
+                KeyCode::Enter => actions.push(TreeSearchAction::Confirm.into()),
+                KeyCode::Esc => actions.push(TreeSearchAction::Cancel.into()),
                 _ => {}
             }
             return;
@@ -125,7 +151,19 @@ impl WorkSpace {
             return;
         }
 
-        if self.search_has_results {
+        if self.tree_search_has_results {
+            match event.code {
+                KeyCode::Char('n') => {
+                    actions.push(TreeSearchAction::Next.into());
+                    return;
+                }
+                KeyCode::Char('p') => {
+                    actions.push(TreeSearchAction::Previous.into());
+                    return;
+                }
+                _ => {}
+            }
+        } else if self.search_has_results {
             match event.code {
                 KeyCode::Char('n') => {
                     actions.push(SearchAction::Next.into());
@@ -160,6 +198,9 @@ impl WorkSpace {
             }
             KeyCode::Char('/') => {
                 actions.push(SearchAction::Start.into());
+            }
+            KeyCode::Char('?') => {
+                actions.push(TreeSearchAction::Start.into());
             }
             KeyCode::Char('h') => {
                 actions.push(NavigationAction::Close.into());
@@ -341,6 +382,9 @@ impl WorkSpace {
             NavigationAction::Search(action) => {
                 self.handle_search_action(state, action);
             }
+            NavigationAction::TreeSearch(action) => {
+                self.handle_tree_search_action(state, action);
+            }
         }
 
         if prev_index != state.list_state.selected() {
@@ -392,6 +436,8 @@ impl WorkSpace {
             .replace(&selector, new_node)
             .expect("broken selector");
         self.reindex(index, node_index, false);
+        self.tree_search_has_results = false;
+        self.tree_search_state = None;
         self.set_preview_to_selected(worktree_state, false);
     }
 
@@ -406,6 +452,8 @@ impl WorkSpace {
             state.preview_state.clear_search();
             self.search_active = false;
             self.search_has_results = false;
+            self.tree_search_has_results = false;
+            self.tree_search_state = None;
             return;
         }
 
@@ -459,6 +507,8 @@ impl WorkSpace {
             SearchAction::Start => {
                 if self.preview.is_some() {
                     self.search_active = true;
+                    self.tree_search_has_results = false;
+                    self.tree_search_state = None;
                     state.preview_state.search = Some(SearchState {
                         query: String::new(),
                         is_input_mode: true,
@@ -519,6 +569,162 @@ impl WorkSpace {
                 }
             }
         }
+    }
+
+    fn handle_tree_search_action(
+        &mut self,
+        state: &mut WorkSpaceState,
+        action: TreeSearchAction,
+    ) {
+        match action {
+            TreeSearchAction::Start => {
+                self.tree_search_active = true;
+                self.tree_search_has_results = false;
+                self.tree_search_state = Some(TreeSearchState {
+                    query: String::new(),
+                    is_input_mode: true,
+                    bfs_queue: VecDeque::new(),
+                    matches: Vec::new(),
+                    current_match: 0,
+                });
+                self.search_has_results = false;
+                state.preview_state.clear_search();
+            }
+            TreeSearchAction::Input(c) => {
+                if let Some(ts) = &mut self.tree_search_state {
+                    ts.query.push(c);
+                }
+            }
+            TreeSearchAction::Backspace => {
+                if let Some(ts) = &mut self.tree_search_state {
+                    ts.query.pop();
+                }
+            }
+            TreeSearchAction::Confirm => {
+                self.tree_search_active = false;
+                if let Some(ts) = &mut self.tree_search_state {
+                    ts.is_input_mode = false;
+                    if ts.query.is_empty() {
+                        self.tree_search_state = None;
+                        return;
+                    }
+                    ts.bfs_queue.push_back(vec![]);
+                }
+                self.bfs_find_next(state);
+            }
+            TreeSearchAction::Cancel => {
+                self.tree_search_active = false;
+                self.tree_search_has_results = false;
+                self.tree_search_state = None;
+            }
+            TreeSearchAction::Next => {
+                let should_bfs = self.tree_search_state.as_ref().is_some_and(|ts| {
+                    ts.current_match + 1 >= ts.matches.len()
+                });
+                if should_bfs {
+                    self.bfs_find_next(state);
+                } else if let Some(ts) = &mut self.tree_search_state {
+                    ts.current_match += 1;
+                    let path = ts.matches[ts.current_match].clone();
+                    self.expand_to_path(state, &path);
+                }
+            }
+            TreeSearchAction::Previous => {
+                if let Some(ts) = &mut self.tree_search_state {
+                    if ts.current_match > 0 {
+                        ts.current_match -= 1;
+                        let path = ts.matches[ts.current_match].clone();
+                        self.expand_to_path(state, &path);
+                    }
+                }
+            }
+        }
+    }
+
+    fn bfs_find_next(&mut self, state: &mut WorkSpaceState) {
+        let ts = match &mut self.tree_search_state {
+            Some(ts) => ts,
+            None => return,
+        };
+
+        let initial_match_count = ts.matches.len();
+        let query_lower = ts.query.to_lowercase();
+
+        while let Some(path) = ts.bfs_queue.pop_front() {
+            let node = match self.file_root.subtree(&path) {
+                Ok(node) => node,
+                Err(_) => continue,
+            };
+            let index = node.as_index();
+            match index.kind {
+                IndexKind::Object(keys) => {
+                    for key in keys {
+                        let mut child_path = path.clone();
+                        child_path.push(key.clone());
+                        if key.to_lowercase().contains(&query_lower) {
+                            ts.matches.push(child_path.clone());
+                        }
+                        ts.bfs_queue.push_back(child_path);
+                    }
+                }
+                IndexKind::Array(n) => {
+                    for i in 0..n {
+                        let mut child_path = path.clone();
+                        child_path.push(i.to_string());
+                        ts.bfs_queue.push_back(child_path);
+                    }
+                }
+                IndexKind::Terminal => {}
+            }
+
+            if ts.matches.len() > initial_match_count {
+                break;
+            }
+        }
+
+        if ts.matches.len() > initial_match_count {
+            ts.current_match = initial_match_count;
+            self.tree_search_has_results = true;
+            let path = ts.matches[ts.current_match].clone();
+            self.expand_to_path(state, &path);
+        }
+    }
+
+    fn expand_to_path(&mut self, state: &mut WorkSpaceState, path: &[String]) {
+        let mut current_idx = 0;
+
+        // Expand root if not expanded
+        if !self.work_tree_root.is_expanded(0) {
+            self.expand(0);
+        }
+
+        for (i, segment) in path.iter().enumerate() {
+            let children = match self.work_tree_root.direct_children(current_idx) {
+                Some(c) => c,
+                None => return,
+            };
+
+            let child_idx = children
+                .iter()
+                .find(|(_, name)| *name == segment.as_str())
+                .map(|(idx, _)| *idx);
+
+            let Some(child_idx) = child_idx else {
+                return;
+            };
+
+            if i < path.len() - 1 {
+                // Not the last segment — expand it
+                if !self.work_tree_root.is_expanded(child_idx) {
+                    self.expand(child_idx);
+                }
+            }
+
+            current_idx = child_idx;
+        }
+
+        state.list_state.select(Some(current_idx));
+        self.set_preview_to_selected(state, false);
     }
 
     fn execute_search(&mut self, state: &mut WorkSpaceState) {
@@ -865,10 +1071,20 @@ impl StatefulWidget for &WorkSpace {
 
 impl WorkSpace {
     fn render_tree(&self, area: Rect, buf: &mut Buffer, state: &mut WorkSpaceState) {
-        let block = Block::bordered().title("Tree");
-        let inner_area = block.inner(area);
+        let has_tree_search = self.tree_search_state.is_some();
 
-        block.render(area, buf);
+        let (block_area, search_bar_y) = if has_tree_search && area.height > 2 {
+            let mut block_area = area;
+            block_area.height -= 1;
+            (block_area, Some(area.y + area.height - 1))
+        } else {
+            (area, None)
+        };
+
+        let block = Block::bordered().title("Tree");
+        let inner_area = block.inner(block_area);
+
+        block.render(block_area, buf);
         StatefulWidget::render(&self.list, inner_area, buf, &mut state.list_state);
 
         let scrollbar = scrollbar(ScrollbarOrientation::VerticalRight);
@@ -879,6 +1095,31 @@ impl WorkSpace {
             &mut ScrollbarState::new(self.work_tree_root.len())
                 .position(state.list_state.selected().unwrap_or_default()),
         );
+
+        if let (Some(search_y), Some(ts)) = (search_bar_y, &self.tree_search_state) {
+            let search_x = area.x;
+            let width = area.width as usize;
+            let left = if ts.is_input_mode {
+                format!("?{}█", ts.query)
+            } else {
+                format!("?{}", ts.query)
+            };
+            let right = if !ts.matches.is_empty() {
+                format!("{}/{}", ts.current_match + 1, ts.matches.len())
+            } else if !ts.is_input_mode {
+                String::from("0/0")
+            } else {
+                String::new()
+            };
+            let padding = width.saturating_sub(left.len() + right.len());
+            let display = format!("{}{:padding$}{}", left, "", right);
+            let display = if display.len() > width {
+                &display[..width]
+            } else {
+                &display
+            };
+            buf.set_string(search_x, search_y, display, Style::new());
+        }
     }
 }
 
@@ -1010,6 +1251,10 @@ mod test {
             (
                 (KeyCode::Char('/'), KeyModifiers::NONE),
                 NavigationAction::Search(SearchAction::Start),
+            ),
+            (
+                (KeyCode::Char('?'), KeyModifiers::NONE),
+                NavigationAction::TreeSearch(TreeSearchAction::Start),
             ),
         ] {
             assert_key_event_to_action(&worktree, key, vec![action.into()]);
@@ -2193,5 +2438,200 @@ mod test {
 
             Ok(true)
         }
+    }
+
+    #[test]
+    fn tree_search_event_routing_test() {
+        let json = String::from("123");
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        worktree.tree_search_active = true;
+
+        for (key, action) in [
+            (
+                (KeyCode::Char('a'), KeyModifiers::NONE),
+                TreeSearchAction::Input('a'),
+            ),
+            (
+                (KeyCode::Char('z'), KeyModifiers::NONE),
+                TreeSearchAction::Input('z'),
+            ),
+            (
+                (KeyCode::Backspace, KeyModifiers::NONE),
+                TreeSearchAction::Backspace,
+            ),
+            (
+                (KeyCode::Enter, KeyModifiers::NONE),
+                TreeSearchAction::Confirm,
+            ),
+            (
+                (KeyCode::Esc, KeyModifiers::NONE),
+                TreeSearchAction::Cancel,
+            ),
+        ] {
+            assert_key_event_to_action(&worktree, key, vec![action.into()]);
+        }
+
+        // Verify normal keys are NOT routed when tree_search_active
+        assert_key_event_to_action(
+            &worktree,
+            (KeyCode::Char('q'), KeyModifiers::NONE),
+            vec![TreeSearchAction::Input('q').into()],
+        );
+
+        // Verify n/p route to TreeSearchAction when tree_search_has_results
+        let mut worktree2 =
+            WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        worktree2.tree_search_has_results = true;
+        assert_key_event_to_action(
+            &worktree2,
+            (KeyCode::Char('n'), KeyModifiers::NONE),
+            vec![TreeSearchAction::Next.into()],
+        );
+        assert_key_event_to_action(
+            &worktree2,
+            (KeyCode::Char('p'), KeyModifiers::NONE),
+            vec![TreeSearchAction::Previous.into()],
+        );
+    }
+
+    #[test]
+    fn tree_search_bfs_order_test() {
+        // {"a":{"target":1},"target":2} — should find top-level "target" first
+        let json = r#"{"a":{"target":1},"target":2}"#;
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        // Start tree search
+        worktree.test_action(&mut state, TreeSearchAction::Start.into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('t').into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('a').into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('r').into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('g').into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('e').into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('t').into());
+        worktree.test_action(&mut state, TreeSearchAction::Confirm.into());
+
+        // First match should be top-level "target" (shallowest)
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.matches.len(), 1);
+        assert_eq!(ts.matches[0], vec!["target"]);
+        assert!(worktree.tree_search_has_results);
+
+        // Next should find nested "target"
+        worktree.test_action(&mut state, TreeSearchAction::Next.into());
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.matches.len(), 2);
+        assert_eq!(ts.matches[1], vec!["a", "target"]);
+    }
+
+    #[test]
+    fn tree_search_through_array_test() {
+        // {"list":[{"target":1}]} — should find "target" inside array element
+        let json = r#"{"list":[{"target":1}]}"#;
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, TreeSearchAction::Start.into());
+        for c in "target".chars() {
+            worktree.test_action(&mut state, TreeSearchAction::Input(c).into());
+        }
+        worktree.test_action(&mut state, TreeSearchAction::Confirm.into());
+
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.matches.len(), 1);
+        assert_eq!(ts.matches[0], vec!["list", "0", "target"]);
+        assert!(worktree.tree_search_has_results);
+
+        // Tree should be expanded to "target"
+        let selector = worktree.work_tree_root.selector(state.list_state.selected().unwrap());
+        assert_eq!(selector, vec!["list", "0", "target"]);
+    }
+
+    #[test]
+    fn tree_search_next_previous_test() {
+        // {"a":"x","b":"y","ab":"z"} — "a" matches "a" and "ab"
+        let json = r#"{"a":"x","b":"y","ab":"z"}"#;
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, TreeSearchAction::Start.into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('a').into());
+        worktree.test_action(&mut state, TreeSearchAction::Confirm.into());
+
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.current_match, 0);
+        assert_eq!(ts.matches[0], vec!["a"]);
+
+        // next resumes BFS, should find "ab"
+        worktree.test_action(&mut state, TreeSearchAction::Next.into());
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.matches.len(), 2);
+        assert_eq!(ts.current_match, 1);
+        assert_eq!(ts.matches[1], vec!["ab"]);
+
+        // previous goes back
+        worktree.test_action(&mut state, TreeSearchAction::Previous.into());
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.current_match, 0);
+
+        // previous at 0 stays at 0
+        worktree.test_action(&mut state, TreeSearchAction::Previous.into());
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.current_match, 0);
+    }
+
+    #[test]
+    fn tree_search_cancel_test() {
+        let json = r#"{"a":1,"b":2}"#;
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, TreeSearchAction::Start.into());
+        assert!(worktree.tree_search_active);
+        assert!(worktree.tree_search_state.is_some());
+
+        worktree.test_action(&mut state, TreeSearchAction::Cancel.into());
+        assert!(!worktree.tree_search_active);
+        assert!(!worktree.tree_search_has_results);
+        assert!(worktree.tree_search_state.is_none());
+    }
+
+    #[test]
+    fn tree_search_no_match_test() {
+        let json = r#"{"a":1,"b":2}"#;
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, TreeSearchAction::Start.into());
+        for c in "zzz".chars() {
+            worktree.test_action(&mut state, TreeSearchAction::Input(c).into());
+        }
+        worktree.test_action(&mut state, TreeSearchAction::Confirm.into());
+
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert!(ts.matches.is_empty());
+        assert!(!worktree.tree_search_has_results);
+    }
+
+    #[test]
+    fn render_tree_search_bar_test() {
+        let json = r#"{"key":"value","array":[1,2,3]}"#;
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        // Start tree search and type
+        worktree.test_action(&mut state, TreeSearchAction::Start.into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('k').into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('e').into());
+        worktree.test_action(&mut state, TreeSearchAction::Input('y').into());
+
+        // Input mode: ?key█
+        assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
+
+        // Confirm search
+        worktree.test_action(&mut state, TreeSearchAction::Confirm.into());
+
+        // Confirmed mode: ?key with match counter
+        assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
     }
 }
