@@ -52,6 +52,7 @@ pub struct WorkSpace {
     preview_pct: u16,
     loading: Option<Loading>,
     search_active: bool,
+    search_has_results: bool,
 }
 
 impl WorkSpace {
@@ -70,6 +71,7 @@ impl WorkSpace {
             preview_pct: 65,
             loading: None,
             search_active: false,
+            search_has_results: false,
         }
     }
 
@@ -121,6 +123,20 @@ impl WorkSpace {
                 _ => {}
             }
             return;
+        }
+
+        if self.search_has_results {
+            match event.code {
+                KeyCode::Char('n') => {
+                    actions.push(SearchAction::Next.into());
+                    return;
+                }
+                KeyCode::Char('p') => {
+                    actions.push(SearchAction::Previous.into());
+                    return;
+                }
+                _ => {}
+            }
         }
 
         match event.code {
@@ -389,6 +405,7 @@ impl WorkSpace {
             self.preview = None;
             state.preview_state.clear_search();
             self.search_active = false;
+            self.search_has_results = false;
             return;
         }
 
@@ -402,6 +419,7 @@ impl WorkSpace {
 
         state.preview_state.clear_search();
         self.search_active = false;
+        self.search_has_results = false;
 
         let Some(index) = state.list_state.selected() else {
             return;
@@ -468,6 +486,7 @@ impl WorkSpace {
             }
             SearchAction::Cancel => {
                 self.search_active = false;
+                self.search_has_results = false;
                 state.preview_state.clear_search();
             }
             SearchAction::Next => {
@@ -477,6 +496,23 @@ impl WorkSpace {
                     }
                     search.current_match =
                         (search.current_match + 1) % search.matches.len();
+                    let (line_idx, _) = search.matches[search.current_match];
+                    Some(line_idx as u16)
+                });
+                if let Some(line) = line {
+                    state.preview_state.set_y_offset(line);
+                }
+            }
+            SearchAction::Previous => {
+                let line = state.preview_state.search.as_mut().and_then(|search| {
+                    if search.matches.is_empty() {
+                        return None;
+                    }
+                    search.current_match = if search.current_match == 0 {
+                        search.matches.len() - 1
+                    } else {
+                        search.current_match - 1
+                    };
                     let (line_idx, _) = search.matches[search.current_match];
                     Some(line_idx as u16)
                 });
@@ -515,6 +551,7 @@ impl WorkSpace {
         }
 
         let first_line = matches.first().map(|&(line_idx, _)| line_idx as u16);
+        self.search_has_results = !matches.is_empty();
         if let Some(search) = &mut state.preview_state.search {
             search.matches = matches;
             search.current_match = 0;
@@ -2007,6 +2044,30 @@ mod test {
             (KeyCode::Char('q'), KeyModifiers::NONE),
             vec![SearchAction::Input('q').into()],
         );
+
+        // Verify n/p route to Next/Previous when search_has_results (not in input mode)
+        let mut worktree2 =
+            WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        worktree2.search_has_results = true;
+        assert_key_event_to_action(
+            &worktree2,
+            (KeyCode::Char('n'), KeyModifiers::NONE),
+            vec![SearchAction::Next.into()],
+        );
+        assert_key_event_to_action(
+            &worktree2,
+            (KeyCode::Char('p'), KeyModifiers::NONE),
+            vec![SearchAction::Previous.into()],
+        );
+
+        // Verify p routes to TogglePreview when no search results
+        let worktree3 =
+            WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        assert_key_event_to_action(
+            &worktree3,
+            (KeyCode::Char('p'), KeyModifiers::NONE),
+            vec![NavigationAction::TogglePreview.into()],
+        );
     }
 
     #[test]
@@ -2050,14 +2111,26 @@ mod test {
         assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
 
         // Next cycles through matches
+        assert!(worktree.search_has_results);
         worktree.test_action(&mut state, SearchAction::Next.into());
         let search = state.preview_state.search.as_ref().unwrap();
         assert_eq!(search.current_match, 1 % search.matches.len());
+
+        // Previous goes backwards
+        worktree.test_action(&mut state, SearchAction::Previous.into());
+        let search = state.preview_state.search.as_ref().unwrap();
+        assert_eq!(search.current_match, 0);
+
+        // Previous wraps to last match
+        worktree.test_action(&mut state, SearchAction::Previous.into());
+        let search = state.preview_state.search.as_ref().unwrap();
+        assert_eq!(search.current_match, search.matches.len() - 1);
 
         // Cancel clears search
         worktree.test_action(&mut state, SearchAction::Start.into());
         worktree.test_action(&mut state, SearchAction::Cancel.into());
         assert!(!worktree.search_active);
+        assert!(!worktree.search_has_results);
         assert!(state.preview_state.search.is_none());
     }
 

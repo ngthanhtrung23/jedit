@@ -34,6 +34,7 @@ pub enum SearchAction {
     Confirm,
     Cancel,
     Next,
+    Previous,
 }
 
 impl From<SearchAction> for Action {
