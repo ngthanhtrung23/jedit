@@ -494,8 +494,10 @@ impl WorkSpace {
                     if search.matches.is_empty() {
                         return None;
                     }
-                    search.current_match =
-                        (search.current_match + 1) % search.matches.len();
+                    if search.current_match + 1 >= search.matches.len() {
+                        return None;
+                    }
+                    search.current_match += 1;
                     let (line_idx, _) = search.matches[search.current_match];
                     Some(line_idx as u16)
                 });
@@ -505,14 +507,10 @@ impl WorkSpace {
             }
             SearchAction::Previous => {
                 let line = state.preview_state.search.as_mut().and_then(|search| {
-                    if search.matches.is_empty() {
+                    if search.matches.is_empty() || search.current_match == 0 {
                         return None;
                     }
-                    search.current_match = if search.current_match == 0 {
-                        search.matches.len() - 1
-                    } else {
-                        search.current_match - 1
-                    };
+                    search.current_match -= 1;
                     let (line_idx, _) = search.matches[search.current_match];
                     Some(line_idx as u16)
                 });
@@ -2110,21 +2108,16 @@ mod test {
         // Snapshot with search highlights
         assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
 
-        // Next cycles through matches
+        // Next at last match stays at last match (no wrap)
         assert!(worktree.search_has_results);
+        let n_matches = state.preview_state.search.as_ref().unwrap().matches.len();
+        assert_eq!(n_matches, 1);
         worktree.test_action(&mut state, SearchAction::Next.into());
-        let search = state.preview_state.search.as_ref().unwrap();
-        assert_eq!(search.current_match, 1 % search.matches.len());
+        assert_eq!(state.preview_state.search.as_ref().unwrap().current_match, 0);
 
-        // Previous goes backwards
+        // Previous at first match stays at first match (no wrap)
         worktree.test_action(&mut state, SearchAction::Previous.into());
-        let search = state.preview_state.search.as_ref().unwrap();
-        assert_eq!(search.current_match, 0);
-
-        // Previous wraps to last match
-        worktree.test_action(&mut state, SearchAction::Previous.into());
-        let search = state.preview_state.search.as_ref().unwrap();
-        assert_eq!(search.current_match, search.matches.len() - 1);
+        assert_eq!(state.preview_state.search.as_ref().unwrap().current_match, 0);
 
         // Cancel clears search
         worktree.test_action(&mut state, SearchAction::Start.into());

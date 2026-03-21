@@ -73,12 +73,9 @@ impl StatefulWidget for &Preview {
     type State = PreviewState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let is_search_input = state
-            .search
-            .as_ref()
-            .is_some_and(|s| s.is_input_mode);
+        let has_search = state.search.is_some();
 
-        let (block_area, search_bar_y) = if is_search_input && area.height > 2 {
+        let (block_area, search_bar_y) = if has_search && area.height > 2 {
             let mut block_area = area;
             block_area.height -= 1;
             (block_area, Some(area.y + area.height - 1))
@@ -193,10 +190,23 @@ impl StatefulWidget for &Preview {
         if let Some(search_y) = search_bar_y {
             let search = state.search.as_ref().unwrap();
             let search_x = area.x;
-            let max_width = area.width as usize;
-            let display = format!("/{}█", search.query);
-            let display = if display.len() > max_width {
-                &display[..max_width]
+            let width = area.width as usize;
+            let left = if search.is_input_mode {
+                format!("/{}█", search.query)
+            } else {
+                format!("/{}", search.query)
+            };
+            let right = if !search.matches.is_empty() {
+                format!("{}/{}", search.current_match + 1, search.matches.len())
+            } else if !search.is_input_mode {
+                String::from("0/0")
+            } else {
+                String::new()
+            };
+            let padding = width.saturating_sub(left.len() + right.len());
+            let display = format!("{}{:padding$}{}", left, "", right);
+            let display = if display.len() > width {
+                &display[..width]
             } else {
                 &display
             };

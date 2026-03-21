@@ -1,6 +1,6 @@
 ---
 source: src/app/component/workspace.rs
-assertion_line: 2050
+assertion_line: 2111
 expression: "stateful_render_to_string(&worktree, &mut state)"
 ---
 "┌Tree──────────────────────┐┌Preview───────────────────────────────────────────┐"
@@ -21,5 +21,5 @@ expression: "stateful_render_to_string(&worktree, &mut state)"
 "│                         █││                                                  │"
 "│                         █││                                                  │"
 "│                         █││                                                  │"
-"│                         ↓││                                                  │"
-"└──────────────────────────┘└──────────────────────────────────────────────────┘"
+"│                         ↓│└──────────────────────────────────────────────────┘"
+"└──────────────────────────┘/cat                                             1/1"
