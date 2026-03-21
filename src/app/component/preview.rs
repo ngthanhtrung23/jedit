@@ -136,8 +136,10 @@ impl StatefulWidget for &Preview {
 
         let lines: Text = if let Some(search) = &state.search {
             if !search.matches.is_empty() && !search.query.is_empty() {
-                let current_match_style = Style::new().bg(Color::Rgb(100, 80, 0));
-                let other_match_style = Style::new().bg(Color::Rgb(60, 50, 0));
+                let current_match_style =
+                    Style::new().bg(Color::Rgb(200, 150, 0)).fg(Color::Black);
+                let other_match_style =
+                    Style::new().bg(Color::Rgb(100, 100, 60)).fg(Color::Black);
                 content
                     .text
                     .lines()
