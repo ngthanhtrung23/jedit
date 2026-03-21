@@ -281,6 +281,27 @@ impl WorkTreeNode {
         unreachable!()
     }
 
+    pub fn parent_index(&self, target: usize) -> Option<usize> {
+        if target == 0 {
+            return None; // root has no parent
+        }
+        Some(self.parent_index_inner(target, 0).expect("unexpected index"))
+    }
+
+    fn parent_index_inner(&self, target: usize, self_index: usize) -> Option<usize> {
+        let mut child_flat = self_index + 1;
+        for child in self.child.as_deref().into_iter().flatten() {
+            if target >= child_flat && target < child_flat + child.len {
+                if target == child_flat {
+                    return Some(self_index);
+                }
+                return child.parent_index_inner(target, child_flat);
+            }
+            child_flat += child.len;
+        }
+        None
+    }
+
     fn formatted_name(&self, is_last: Vec<bool>) -> String {
         prefix(is_last).chain(self.name.chars()).collect()
     }
@@ -452,5 +473,43 @@ mod test {
         assert_eq!(node.selector(4), vec!["b"]);
         assert_eq!(node.selector(5), vec!["b", "0"]);
         assert_eq!(node.selector(8), vec!["c"]);
+    }
+
+    #[test]
+    fn parent_index_test() {
+        let mut node = WorkTreeNode::new_empty(String::from("root"));
+        node.reindex(
+            0,
+            Index {
+                meta: NodeMeta::null(),
+                kind: IndexKind::Object(vec![
+                    String::from("a"),
+                    String::from("b"),
+                    String::from("c"),
+                ]),
+            },
+            true,
+        );
+        node.reindex(
+            1,
+            Index {
+                meta: NodeMeta::null(),
+                kind: IndexKind::Object(vec![String::from("aa"), String::from("ab")]),
+            },
+            true,
+        );
+
+        // root (0)
+        //   a (1)
+        //     aa (2)
+        //     ab (3)
+        //   b (4)
+        //   c (5)
+        assert_eq!(node.parent_index(0), None);
+        assert_eq!(node.parent_index(1), Some(0));
+        assert_eq!(node.parent_index(2), Some(1));
+        assert_eq!(node.parent_index(3), Some(1));
+        assert_eq!(node.parent_index(4), Some(0));
+        assert_eq!(node.parent_index(5), Some(0));
     }
 }

@@ -34,6 +34,7 @@ pub enum NavigationAction {
     Bottom,
     Expand,
     Close,
+    CloseOrCloseParent,
     TogglePreview,
     PreviewNavigation(PreviewNavigationAction),
     PreviewWindowResize(Op),

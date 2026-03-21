@@ -129,6 +129,9 @@ impl WorkSpace {
             KeyCode::Char('h') => {
                 actions.push(NavigationAction::Close.into());
             }
+            KeyCode::BackTab => {
+                actions.push(NavigationAction::CloseOrCloseParent.into());
+            }
             KeyCode::Char('p') => {
                 actions.push(NavigationAction::TogglePreview.into());
             }
@@ -274,6 +277,18 @@ impl WorkSpace {
                 if let Some(index) = state.list_state.selected() {
                     self.work_tree_root.close(index);
                     self.list = new_list(&self.work_tree_root);
+                }
+            }
+            NavigationAction::CloseOrCloseParent => {
+                if let Some(index) = state.list_state.selected() {
+                    if self.work_tree_root.is_expanded(index) {
+                        self.work_tree_root.close(index);
+                        self.list = new_list(&self.work_tree_root);
+                    } else if let Some(parent) = self.work_tree_root.parent_index(index) {
+                        self.work_tree_root.close(parent);
+                        self.list = new_list(&self.work_tree_root);
+                        state.list_state.select(Some(parent));
+                    }
                 }
             }
             NavigationAction::TogglePreview => {
@@ -801,6 +816,10 @@ mod test {
             (
                 (KeyCode::Char('h'), KeyModifiers::NONE),
                 NavigationAction::Close,
+            ),
+            (
+                (KeyCode::BackTab, KeyModifiers::SHIFT),
+                NavigationAction::CloseOrCloseParent,
             ),
             (
                 (KeyCode::Char('p'), KeyModifiers::NONE),
@@ -1792,6 +1811,47 @@ mod test {
         worktree.test_action(&mut state, NavigationAction::Top.into());
         worktree.test_action(&mut state, NavigationAction::Expand.into());
         assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
+    }
+
+    #[test]
+    fn handle_close_or_close_parent_test() {
+        let json = String::from(r#"{"key": "string", "values": [1, 2, 3]}"#);
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        // Expand root, move into "values", expand it
+        worktree.test_action(&mut state, NavigationAction::Expand.into());
+        worktree.test_action(&mut state, NavigationAction::Down(1).into());
+        worktree.test_action(&mut state, NavigationAction::Expand.into());
+
+        // Now on first child of "values" (index 3), which is not expanded
+        assert_eq!(state.list_state.selected(), Some(3));
+
+        // CloseOrCloseParent on unexpanded node: should close parent "values" and move cursor to it
+        worktree.test_action(&mut state, NavigationAction::CloseOrCloseParent.into());
+        assert_eq!(state.list_state.selected(), Some(2));
+        assert!(!worktree.work_tree_root.is_expanded(2)); // "values" is now closed
+
+        // Now on "values" (index 2), which is not expanded
+        // CloseOrCloseParent should close parent "root" and move cursor to it
+        worktree.test_action(&mut state, NavigationAction::CloseOrCloseParent.into());
+        assert_eq!(state.list_state.selected(), Some(0));
+        assert!(!worktree.work_tree_root.is_expanded(0)); // root is now closed
+
+        // Re-expand root and "values"
+        worktree.test_action(&mut state, NavigationAction::Expand.into());
+        worktree.test_action(&mut state, NavigationAction::Down(1).into());
+        worktree.test_action(&mut state, NavigationAction::Expand.into());
+        worktree.test_action(&mut state, NavigationAction::Up(1).into());
+
+        // Now on "values" (index 2), which IS expanded
+        assert_eq!(state.list_state.selected(), Some(2));
+        assert!(worktree.work_tree_root.is_expanded(2));
+
+        // CloseOrCloseParent on expanded node: should close current, stay on same index
+        worktree.test_action(&mut state, NavigationAction::CloseOrCloseParent.into());
+        assert_eq!(state.list_state.selected(), Some(2));
+        assert!(!worktree.work_tree_root.is_expanded(2));
     }
 
     fn assert_key_event_to_action(
