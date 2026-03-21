@@ -585,6 +585,7 @@ impl WorkSpace {
                 });
                 self.search_has_results = false;
                 state.preview_state.clear_search();
+                state.tree_search_match_index = None;
             }
             TreeSearchAction::Input(c) => {
                 if let Some(ts) = &mut self.tree_search_state {
@@ -612,6 +613,7 @@ impl WorkSpace {
                 self.tree_search_active = false;
                 self.tree_search_has_results = false;
                 self.tree_search_state = None;
+                state.tree_search_match_index = None;
             }
             TreeSearchAction::Next => {
                 let should_bfs = self.tree_search_state.as_ref().is_some_and(|ts| {
@@ -728,6 +730,7 @@ impl WorkSpace {
         }
 
         state.list_state.select(Some(current_idx));
+        state.tree_search_match_index = Some(current_idx);
         self.set_preview_to_selected(state, false);
     }
 
@@ -1031,6 +1034,7 @@ pub struct WorkSpaceState {
     list_state: ListState,
     preview_state: PreviewState,
     tree_view_offset: usize,
+    tree_search_match_index: Option<usize>,
 }
 
 impl Default for WorkSpaceState {
@@ -1041,6 +1045,7 @@ impl Default for WorkSpaceState {
             list_state,
             preview_state: PreviewState::default(),
             tree_view_offset: 0,
+            tree_search_match_index: None,
         }
     }
 }
@@ -1105,6 +1110,26 @@ impl WorkSpace {
         temp_list_state.select(windowed_selected);
         StatefulWidget::render(&list, inner_area, buf, &mut temp_list_state);
         state.tree_view_offset = *temp_list_state.offset_mut();
+
+        if let Some(match_flat) = state.tree_search_match_index {
+            let windowed_match = entries
+                .iter()
+                .position(|e| e.real_index == Some(match_flat));
+            if let Some(wm) = windowed_match {
+                if Some(wm) != windowed_selected {
+                    let offset = *temp_list_state.offset_mut();
+                    let visible_height = inner_area.height as usize;
+                    if wm >= offset && wm < offset + visible_height {
+                        let row_y = inner_area.y + (wm - offset) as u16;
+                        let match_style =
+                            Style::new().bg(Color::Rgb(200, 150, 0)).fg(Color::Black);
+                        for x in inner_area.x..inner_area.x + inner_area.width {
+                            buf[(x, row_y)].set_style(match_style);
+                        }
+                    }
+                }
+            }
+        }
 
         let scrollbar = scrollbar(ScrollbarOrientation::VerticalRight);
         StatefulWidget::render(
