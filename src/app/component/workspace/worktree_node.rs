@@ -1,6 +1,16 @@
-use std::{cell::RefCell, iter::Peekable, slice::Iter};
+use std::{cell::RefCell, collections::BTreeSet, iter::Peekable, slice::Iter};
 
 use crate::container::node::{Index, IndexKind, NodeKind, NodeMeta};
+
+const WINDOW_THRESHOLD: usize = 12;
+const EDGE_COUNT: usize = 3;
+const FOCUS_RADIUS: usize = 3;
+
+#[derive(Debug)]
+pub struct WindowedTreeEntry {
+    pub display: String,
+    pub real_index: Option<usize>,
+}
 
 #[derive(Debug)]
 pub struct WorkTreeNode {
@@ -318,6 +328,93 @@ impl WorkTreeNode {
     fn formatted_name(&self, is_last: Vec<bool>) -> String {
         prefix(is_last).chain(self.name.chars()).collect()
     }
+
+    pub fn as_windowed_tree_string(&self, selected: Option<usize>) -> Vec<WindowedTreeEntry> {
+        let mut result = Vec::new();
+        self.windowed_dfs(&mut result, selected, &mut Vec::new(), 0);
+        result
+    }
+
+    fn find_focus_child(&self, selected: usize, self_flat_index: usize) -> Option<usize> {
+        let children = self.child.as_deref()?;
+        let mut child_flat = self_flat_index + 1;
+        for (i, child) in children.iter().enumerate() {
+            if selected >= child_flat && selected < child_flat + child.len {
+                return Some(i);
+            }
+            child_flat += child.len;
+        }
+        None
+    }
+
+    fn windowed_dfs(
+        &self,
+        result: &mut Vec<WindowedTreeEntry>,
+        selected: Option<usize>,
+        is_last_stack: &mut Vec<bool>,
+        self_flat_index: usize,
+    ) {
+        result.push(WindowedTreeEntry {
+            display: self.formatted_name(is_last_stack.clone()),
+            real_index: Some(self_flat_index),
+        });
+
+        let Some(children) = &self.child else {
+            return;
+        };
+        let n = children.len();
+        if n == 0 {
+            return;
+        }
+
+        if n <= WINDOW_THRESHOLD {
+            let mut child_flat = self_flat_index + 1;
+            for (i, child) in children.iter().enumerate() {
+                is_last_stack.push(i == n - 1);
+                child.windowed_dfs(result, selected, is_last_stack, child_flat);
+                is_last_stack.pop();
+                child_flat += child.len;
+            }
+            return;
+        }
+
+        let focus = selected.and_then(|sel| self.find_focus_child(sel, self_flat_index));
+        let visible = compute_visible_indices(n, focus);
+
+        let mut child_flat = self_flat_index + 1;
+        let mut prev_visible: Option<usize> = None;
+
+        for (i, child) in children.iter().enumerate() {
+            if visible.contains(&i) {
+                if let Some(pv) = prev_visible {
+                    if pv + 1 < i {
+                        let hidden = i - pv - 1;
+                        let ellipsis_prefix: String =
+                            prefix(is_last_stack.iter().copied().chain([false]).collect())
+                                .collect();
+                        result.push(WindowedTreeEntry {
+                            display: format!("{}... ({} hidden)", ellipsis_prefix, hidden),
+                            real_index: None,
+                        });
+                    }
+                } else if i > 0 {
+                    let hidden = i;
+                    let ellipsis_prefix: String =
+                        prefix(is_last_stack.iter().copied().chain([false]).collect()).collect();
+                    result.push(WindowedTreeEntry {
+                        display: format!("{}... ({} hidden)", ellipsis_prefix, hidden),
+                        real_index: None,
+                    });
+                }
+
+                is_last_stack.push(i == n - 1);
+                child.windowed_dfs(result, selected, is_last_stack, child_flat);
+                is_last_stack.pop();
+                prev_visible = Some(i);
+            }
+            child_flat += child.len;
+        }
+    }
 }
 
 pub struct WorkTreeStringIter<'a> {
@@ -360,6 +457,24 @@ impl Iterator for WorkTreeStringIter<'_> {
         }
         Some(next.formatted_name(is_last))
     }
+}
+
+fn compute_visible_indices(n: usize, focus: Option<usize>) -> BTreeSet<usize> {
+    let mut visible = BTreeSet::new();
+    for i in 0..EDGE_COUNT.min(n) {
+        visible.insert(i);
+    }
+    for i in n.saturating_sub(EDGE_COUNT)..n {
+        visible.insert(i);
+    }
+    if let Some(f) = focus {
+        let start = f.saturating_sub(FOCUS_RADIUS);
+        let end = (f + FOCUS_RADIUS).min(n - 1);
+        for i in start..=end {
+            visible.insert(i);
+        }
+    }
+    visible
 }
 
 fn prefix(mut is_last: Vec<bool>) -> impl Iterator<Item = char> {
@@ -563,5 +678,154 @@ mod test {
 
         // leaf node has no children
         assert_eq!(node.direct_children(2), None);
+    }
+
+    fn make_wide_node(n: usize) -> WorkTreeNode {
+        let keys: Vec<String> = (0..n).map(|i| format!("k{}", i)).collect();
+        let mut node = WorkTreeNode::new_empty(String::from("root"));
+        node.reindex(
+            0,
+            Index {
+                meta: NodeMeta::null(),
+                kind: IndexKind::Object(keys),
+            },
+            true,
+        );
+        node
+    }
+
+    #[test]
+    fn compute_visible_indices_no_focus_test() {
+        let vis = compute_visible_indices(15, None);
+        // first 3: 0,1,2  last 3: 12,13,14
+        assert_eq!(vis, BTreeSet::from([0, 1, 2, 12, 13, 14]));
+    }
+
+    #[test]
+    fn compute_visible_indices_focus_middle_test() {
+        let vis = compute_visible_indices(15, Some(7));
+        // first 3: 0,1,2  focus window: 4..=10  last 3: 12,13,14
+        assert_eq!(
+            vis,
+            BTreeSet::from([0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14])
+        );
+    }
+
+    #[test]
+    fn compute_visible_indices_focus_start_overlap_test() {
+        let vis = compute_visible_indices(15, Some(1));
+        // focus window: 0..=4 overlaps with first 3
+        assert_eq!(vis, BTreeSet::from([0, 1, 2, 3, 4, 12, 13, 14]));
+    }
+
+    #[test]
+    fn compute_visible_indices_focus_end_overlap_test() {
+        let vis = compute_visible_indices(15, Some(13));
+        // focus window: 10..=14 overlaps with last 3
+        assert_eq!(vis, BTreeSet::from([0, 1, 2, 10, 11, 12, 13, 14]));
+    }
+
+    #[test]
+    fn compute_visible_indices_all_visible_test() {
+        let vis = compute_visible_indices(6, Some(3));
+        // all 6 indices visible since it's small
+        assert_eq!(vis, BTreeSet::from([0, 1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn windowed_tree_no_windowing_for_small_test() {
+        let node = make_wide_node(10);
+        let windowed = node.as_windowed_tree_string(Some(0));
+        let tree_string: Vec<_> = node.as_tree_string().collect();
+
+        // All entries should have real indices and match as_tree_string output
+        assert_eq!(windowed.len(), tree_string.len());
+        for (w, t) in windowed.iter().zip(tree_string.iter()) {
+            assert_eq!(&w.display, t);
+            assert!(w.real_index.is_some());
+        }
+    }
+
+    #[test]
+    fn windowed_tree_basic_test() {
+        let node = make_wide_node(15);
+        // selected=root(0), no focus child
+        let entries = node.as_windowed_tree_string(Some(0));
+        let displays: Vec<_> = entries.iter().map(|e| e.display.as_str()).collect();
+
+        // root + first 3 + ellipsis + last 3
+        assert_eq!(displays[0], "root");
+        assert_eq!(displays[1], "├─ k0");
+        assert_eq!(displays[2], "├─ k1");
+        assert_eq!(displays[3], "├─ k2");
+        assert!(displays[4].contains("... (9 hidden)"));
+        assert_eq!(displays[5], "├─ k12");
+        assert_eq!(displays[6], "├─ k13");
+        assert_eq!(displays[7], "└─ k14");
+        assert_eq!(entries.len(), 8);
+
+        // Ellipsis entry has no real_index
+        assert!(entries[4].real_index.is_none());
+    }
+
+    #[test]
+    fn windowed_tree_with_focus_test() {
+        let node = make_wide_node(15);
+        // selected=child index 8 → child_idx=7 (k7)
+        // flat index of k7 = 8 (root=0, k0=1, k1=2, ..., k7=8)
+        let entries = node.as_windowed_tree_string(Some(8));
+        let displays: Vec<_> = entries.iter().map(|e| e.display.as_str()).collect();
+
+        // root + first 3 + gap + focus window (k4..k10) + gap + last 3
+        assert_eq!(displays[0], "root");
+        assert_eq!(displays[1], "├─ k0");
+        assert_eq!(displays[2], "├─ k1");
+        assert_eq!(displays[3], "├─ k2");
+        assert!(displays[4].contains("... (1 hidden)"));
+        assert_eq!(displays[5], "├─ k4");
+        assert_eq!(displays[6], "├─ k5");
+        assert_eq!(displays[7], "├─ k6");
+        assert_eq!(displays[8], "├─ k7");
+        assert_eq!(displays[9], "├─ k8");
+        assert_eq!(displays[10], "├─ k9");
+        assert_eq!(displays[11], "├─ k10");
+        assert!(displays[12].contains("... (1 hidden)"));
+        assert_eq!(displays[13], "├─ k12");
+        assert_eq!(displays[14], "├─ k13");
+        assert_eq!(displays[15], "└─ k14");
+    }
+
+    #[test]
+    fn windowed_tree_nested_test() {
+        // Both parent and child have >12 children
+        let mut node = make_wide_node(15);
+        let child_keys: Vec<String> = (0..15).map(|i| format!("c{}", i)).collect();
+        node.reindex(
+            1,
+            Index {
+                meta: NodeMeta::null(),
+                kind: IndexKind::Object(child_keys),
+            },
+            true,
+        );
+
+        // Select root → no focus child, child k0's subtree is also windowed
+        let entries = node.as_windowed_tree_string(Some(0));
+        // k0 is visible and expanded with 15 children, those should also be windowed
+        let displays: Vec<_> = entries.iter().map(|e| e.display.as_str()).collect();
+
+        // Root + k0 + k0's windowed children + ellipsis + last 3 of root
+        assert_eq!(displays[0], "root");
+        assert_eq!(displays[1], "├─ k0");
+        // k0's children: first 3
+        assert_eq!(displays[2], "│  ├─ c0");
+        assert_eq!(displays[3], "│  ├─ c1");
+        assert_eq!(displays[4], "│  ├─ c2");
+        // k0's ellipsis
+        assert!(displays[5].contains("... (9 hidden)"));
+        // k0's last 3
+        assert_eq!(displays[6], "│  ├─ c12");
+        assert_eq!(displays[7], "│  ├─ c13");
+        assert_eq!(displays[8], "│  └─ c14");
     }
 }

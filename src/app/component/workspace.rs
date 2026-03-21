@@ -54,8 +54,6 @@ pub struct WorkSpace {
     work_tree_root: WorkTreeNode,
     is_edited: bool,
 
-    list: List<'static>,
-    // dialogs: Vec<BooleanConfirmDialog>,
     dialogs: Vec<Box<dyn ConfirmDialog>>,
     preview: Option<Preview>,
     preview_pct: u16,
@@ -71,13 +69,11 @@ impl WorkSpace {
     pub fn new(file_root: Node, config: Config) -> Self {
         let work_tree_root =
             WorkTreeNode::new(String::from("root"), Some(file_root.as_index().meta));
-        let list = new_list(&work_tree_root);
         Self {
             config,
             file_root,
             work_tree_root,
             is_edited: false,
-            list,
             dialogs: Vec::new(),
             preview: None,
             preview_pct: 65,
@@ -352,17 +348,14 @@ impl WorkSpace {
             NavigationAction::Close => {
                 if let Some(index) = state.list_state.selected() {
                     self.work_tree_root.close(index);
-                    self.list = new_list(&self.work_tree_root);
                 }
             }
             NavigationAction::CloseOrCloseParent => {
                 if let Some(index) = state.list_state.selected() {
                     if self.work_tree_root.is_expanded(index) {
                         self.work_tree_root.close(index);
-                        self.list = new_list(&self.work_tree_root);
                     } else if let Some(parent) = self.work_tree_root.parent_index(index) {
                         self.work_tree_root.close(parent);
-                        self.list = new_list(&self.work_tree_root);
                         state.list_state.select(Some(parent));
                     }
                 }
@@ -443,7 +436,6 @@ impl WorkSpace {
 
     fn reindex(&mut self, index: usize, node_index: Index, force: bool) {
         self.work_tree_root.reindex(index, node_index, force);
-        self.list = new_list(&self.work_tree_root);
     }
 
     fn toggle_preview(&mut self, state: &mut WorkSpaceState) {
@@ -839,7 +831,6 @@ impl WorkSpace {
         self.work_tree_root
             .append_after(index, new_key, parent_metas);
         self.is_edited = true;
-        self.list = new_list(&self.work_tree_root);
         state.list_state.select_next();
         self.set_preview_to_selected(state, false);
 
@@ -878,7 +869,6 @@ impl WorkSpace {
                     state.list_state.select_previous();
                 }
                 self.is_edited = true;
-                self.list = new_list(&self.work_tree_root);
                 self.set_preview_to_selected(state, false);
             }
         }
@@ -932,7 +922,6 @@ impl WorkSpace {
                             Ok(_) => {
                                 self.work_tree_root.rename(index, new_key);
                                 self.is_edited = true;
-                                self.list = new_list(&self.work_tree_root);
                             }
                             Err(MutationError::DuplicateKey) => {
                                 self.dialogs.push(Box::new(
@@ -1029,6 +1018,7 @@ impl WorkSpace {
 pub struct WorkSpaceState {
     list_state: ListState,
     preview_state: PreviewState,
+    tree_view_offset: usize,
 }
 
 impl Default for WorkSpaceState {
@@ -1038,6 +1028,7 @@ impl Default for WorkSpaceState {
         Self {
             list_state,
             preview_state: PreviewState::default(),
+            tree_view_offset: 0,
         }
     }
 }
@@ -1085,7 +1076,23 @@ impl WorkSpace {
         let inner_area = block.inner(block_area);
 
         block.render(block_area, buf);
-        StatefulWidget::render(&self.list, inner_area, buf, &mut state.list_state);
+
+        let selected = state.list_state.selected();
+        let entries = self.work_tree_root.as_windowed_tree_string(selected);
+        let windowed_selected = selected
+            .and_then(|sel| entries.iter().position(|e| e.real_index == Some(sel)));
+
+        let list = List::new(entries.iter().map(|e| e.display.clone()))
+            .highlight_style(Style::new().bg(SLATE.c800).add_modifier(Modifier::BOLD))
+            .highlight_symbol("> ")
+            .highlight_spacing(HighlightSpacing::Always)
+            .scroll_padding(1);
+
+        let mut temp_list_state = ListState::default();
+        *temp_list_state.offset_mut() = state.tree_view_offset;
+        temp_list_state.select(windowed_selected);
+        StatefulWidget::render(&list, inner_area, buf, &mut temp_list_state);
+        state.tree_view_offset = *temp_list_state.offset_mut();
 
         let scrollbar = scrollbar(ScrollbarOrientation::VerticalRight);
         StatefulWidget::render(
@@ -1121,14 +1128,6 @@ impl WorkSpace {
             buf.set_string(search_x, search_y, display, Style::new());
         }
     }
-}
-
-fn new_list(work_tree_node: &WorkTreeNode) -> List<'static> {
-    List::new(work_tree_node.as_tree_string())
-        .highlight_style(Style::new().bg(SLATE.c800).add_modifier(Modifier::BOLD))
-        .highlight_symbol("> ")
-        .highlight_spacing(HighlightSpacing::Always)
-        .scroll_padding(1)
 }
 
 #[cfg(test)]
