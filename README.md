@@ -45,36 +45,40 @@ Options:
 
 ## Keybind
 
-| Key               | Action                 |
-| ----------------- | ---------------------- |
-| q                 | Exit                   |
-| k / Up            | Up                     |
-| j / Down          | Down                   |
-| l / Enter / Space | Expand                 |
-| Ctrl + u          | Up 10                  |
-| Ctrl + d          | Down 10                |
-| g                 | Move to top            |
-| G                 | Move to bottom         |
-| h                 | Close                  |
-| p                 | Toggle preview         |
-| e                 | Edit value             |
-| r                 | Rename key             |
-| d                 | Delete key             |
-| a                 | Append key             |
-| w                 | Save                   |
-| K                 | Preview up             |
-| J                 | Preview down           |
-| Ctrl + U          | Preview up 5           |
-| Ctrl + D          | Preview down 5         |
-| H                 | Preview left           |
-| L                 | Preview right          |
-| Ctrl + Left       | Preview window bigger  |
-| Ctrl + Right      | Preview window smaller |
+| Key               | Action                          |
+| ----------------- | ------------------------------- |
+| q                 | Exit                            |
+| k / Up            | Up                              |
+| j / Down          | Down                            |
+| l / Enter / Space | Expand                          |
+| Ctrl + u          | Up 10                           |
+| Ctrl + d          | Down 10                         |
+| g                 | Move to top                     |
+| G                 | Move to bottom                  |
+| h                 | Close                           |
+| Shift + Tab       | Close node, or collapse parent  |
+| p                 | Toggle preview                  |
+| e                 | Edit value                      |
+| r                 | Rename key                      |
+| d                 | Delete key                      |
+| a                 | Append key                      |
+| w                 | Save                            |
+| /                 | Search in preview               |
+| ?                 | Search tree keys (BFS)          |
+| n                 | Next search match               |
+| p                 | Previous search match           |
+| K                 | Preview up                      |
+| J                 | Preview down                    |
+| Ctrl + U          | Preview up 5                    |
+| Ctrl + D          | Preview down 5                  |
+| H                 | Preview left                    |
+| L                 | Preview right                   |
+| Ctrl + Left       | Preview window bigger           |
+| Ctrl + Right      | Preview window smaller          |
 
 ## Missing feature
 
 - [ ] Custom keybind
-- [ ] Search
 - [ ] Inline key operation
   - [ ] Add new child key
 - [ ] Prettier error message

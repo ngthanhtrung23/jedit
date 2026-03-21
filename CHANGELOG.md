@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Search in preview (`/`, with `n`/`p` to navigate matches)
+- Search tree keys with BFS (`?`, finds shallowest matches first)
+- Shift+Tab to collapse current node or collapse parent
+- Highlight current line in preview search
+
 ## [0.1.4](https://github.com/aguss787/jedit/compare/v0.1.3...v0.1.4) - 2025-05-13
 
 ### Added
