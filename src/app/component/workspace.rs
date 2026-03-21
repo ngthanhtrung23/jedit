@@ -7,7 +7,7 @@ use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout},
     prelude::{Buffer, Rect},
-    style::{Modifier, Style, palette::tailwind::SLATE},
+    style::{Color, Modifier, Style, palette::tailwind::SLATE},
     text::{Line, Text},
     widgets::{
         Block, HighlightSpacing, List, ListState, ScrollbarOrientation, ScrollbarState,
@@ -40,12 +40,15 @@ use super::{
     scrollbar::scrollbar,
 };
 
+const BFS_NODE_LIMIT: usize = 1_000_000;
+
 struct TreeSearchState {
     query: String,
     is_input_mode: bool,
     bfs_queue: VecDeque<Vec<String>>,
     matches: Vec<Vec<String>>,
     current_match: usize,
+    exhausted: bool,
 }
 
 pub struct WorkSpace {
@@ -578,6 +581,7 @@ impl WorkSpace {
                     bfs_queue: VecDeque::new(),
                     matches: Vec::new(),
                     current_match: 0,
+                    exhausted: false,
                 });
                 self.search_has_results = false;
                 state.preview_state.clear_search();
@@ -641,8 +645,16 @@ impl WorkSpace {
 
         let initial_match_count = ts.matches.len();
         let query_lower = ts.query.to_lowercase();
+        let mut nodes_visited: usize = 0;
 
         while let Some(path) = ts.bfs_queue.pop_front() {
+            nodes_visited += 1;
+            if nodes_visited > BFS_NODE_LIMIT {
+                ts.exhausted = true;
+                ts.bfs_queue.clear();
+                break;
+            }
+
             let node = match self.file_root.subtree(&path) {
                 Ok(node) => node,
                 Err(_) => continue,
@@ -1111,8 +1123,13 @@ impl WorkSpace {
             } else {
                 format!("?{}", ts.query)
             };
+            let no_result = !ts.is_input_mode
+                && ts.matches.is_empty()
+                && (ts.bfs_queue.is_empty() || ts.exhausted);
             let right = if !ts.matches.is_empty() {
                 format!("{}/{}", ts.current_match + 1, ts.matches.len())
+            } else if no_result {
+                String::from("no result")
             } else if !ts.is_input_mode {
                 String::from("0/0")
             } else {
@@ -1125,7 +1142,12 @@ impl WorkSpace {
             } else {
                 &display
             };
-            buf.set_string(search_x, search_y, display, Style::new());
+            let style = if no_result {
+                Style::new().fg(Color::Rgb(239, 68, 68))
+            } else {
+                Style::new()
+            };
+            buf.set_string(search_x, search_y, display, style);
         }
     }
 }

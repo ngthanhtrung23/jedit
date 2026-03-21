@@ -217,10 +217,11 @@ impl StatefulWidget for &Preview {
             } else {
                 format!("/{}", search.query)
             };
+            let no_result = !search.is_input_mode && search.matches.is_empty();
             let right = if !search.matches.is_empty() {
                 format!("{}/{}", search.current_match + 1, search.matches.len())
-            } else if !search.is_input_mode {
-                String::from("0/0")
+            } else if no_result {
+                String::from("no result")
             } else {
                 String::new()
             };
@@ -231,7 +232,12 @@ impl StatefulWidget for &Preview {
             } else {
                 &display
             };
-            buf.set_string(search_x, search_y, display, Style::new());
+            let style = if no_result {
+                Style::new().fg(Color::Rgb(239, 68, 68))
+            } else {
+                Style::new()
+            };
+            buf.set_string(search_x, search_y, display, style);
         }
 
         if y_scroll_size > 0 {
