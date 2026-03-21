@@ -140,11 +140,17 @@ impl StatefulWidget for &Preview {
                     Style::new().bg(Color::Rgb(200, 150, 0)).fg(Color::Black);
                 let other_match_style =
                     Style::new().bg(Color::Rgb(100, 100, 60)).fg(Color::Black);
+                let current_line_style = Style::new().bg(Color::Rgb(50, 50, 50));
+                let current_match_line = search
+                    .matches
+                    .get(search.current_match)
+                    .map(|&(li, _)| li);
                 content
                     .text
                     .lines()
                     .enumerate()
                     .map(|(line_idx, line_str)| {
+                        let is_current_line = current_match_line == Some(line_idx);
                         let line_matches: Vec<usize> = search
                             .matches
                             .iter()
@@ -152,14 +158,27 @@ impl StatefulWidget for &Preview {
                             .map(|(_, bo)| *bo)
                             .collect();
                         if line_matches.is_empty() {
+                            if is_current_line {
+                                return Line::from(
+                                    Span::raw(line_str).style(current_line_style),
+                                );
+                            }
                             return Line::from(line_str);
                         }
+                        let text_style = if is_current_line {
+                            current_line_style
+                        } else {
+                            Style::new()
+                        };
                         let query_len = search.query.len();
                         let mut spans = Vec::new();
                         let mut pos = 0;
                         for &byte_offset in &line_matches {
                             if byte_offset > pos {
-                                spans.push(Span::raw(&line_str[pos..byte_offset]));
+                                spans.push(Span::styled(
+                                    &line_str[pos..byte_offset],
+                                    text_style,
+                                ));
                             }
                             let is_current = search.matches.get(search.current_match)
                                 == Some(&(line_idx, byte_offset));
@@ -173,7 +192,7 @@ impl StatefulWidget for &Preview {
                             pos = end;
                         }
                         if pos < line_str.len() {
-                            spans.push(Span::raw(&line_str[pos..]));
+                            spans.push(Span::styled(&line_str[pos..], text_style));
                         }
                         Line::from(spans)
                     })
