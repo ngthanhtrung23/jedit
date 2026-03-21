@@ -18,6 +18,7 @@ pub(crate) struct SearchState {
     pub is_input_mode: bool,
     pub matches: Vec<(usize, usize)>,
     pub current_match: usize,
+    pub boundary_message: Option<&'static str>,
 }
 
 #[derive(Debug, Default)]
@@ -218,7 +219,10 @@ impl StatefulWidget for &Preview {
                 format!("/{}", search.query)
             };
             let no_result = !search.is_input_mode && search.matches.is_empty();
-            let right = if !search.matches.is_empty() {
+            let is_warning = no_result || search.boundary_message.is_some();
+            let right = if let Some(msg) = search.boundary_message {
+                String::from(msg)
+            } else if !search.matches.is_empty() {
                 format!("{}/{}", search.current_match + 1, search.matches.len())
             } else if no_result {
                 String::from("no result")
@@ -232,7 +236,7 @@ impl StatefulWidget for &Preview {
             } else {
                 &display
             };
-            let style = if no_result {
+            let style = if is_warning {
                 Style::new().fg(Color::Rgb(239, 68, 68))
             } else {
                 Style::new()

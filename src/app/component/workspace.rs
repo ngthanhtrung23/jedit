@@ -49,6 +49,7 @@ struct TreeSearchState {
     matches: Vec<Vec<String>>,
     current_match: usize,
     exhausted: bool,
+    boundary_message: Option<&'static str>,
 }
 
 pub struct WorkSpace {
@@ -509,6 +510,7 @@ impl WorkSpace {
                         is_input_mode: true,
                         matches: Vec::new(),
                         current_match: 0,
+                        boundary_message: None,
                     });
                 }
             }
@@ -540,8 +542,10 @@ impl WorkSpace {
                         return None;
                     }
                     if search.current_match + 1 >= search.matches.len() {
+                        search.boundary_message = Some("no more result");
                         return None;
                     }
+                    search.boundary_message = None;
                     search.current_match += 1;
                     let (line_idx, _) = search.matches[search.current_match];
                     Some(line_idx as u16)
@@ -553,8 +557,12 @@ impl WorkSpace {
             SearchAction::Previous => {
                 let line = state.preview_state.search.as_mut().and_then(|search| {
                     if search.matches.is_empty() || search.current_match == 0 {
+                        if !search.matches.is_empty() {
+                            search.boundary_message = Some("no previous result");
+                        }
                         return None;
                     }
+                    search.boundary_message = None;
                     search.current_match -= 1;
                     let (line_idx, _) = search.matches[search.current_match];
                     Some(line_idx as u16)
@@ -582,6 +590,7 @@ impl WorkSpace {
                     matches: Vec::new(),
                     current_match: 0,
                     exhausted: false,
+                    boundary_message: None,
                 });
                 self.search_has_results = false;
                 state.preview_state.clear_search();
@@ -620,8 +629,20 @@ impl WorkSpace {
                     ts.current_match + 1 >= ts.matches.len()
                 });
                 if should_bfs {
+                    let prev_count = self
+                        .tree_search_state
+                        .as_ref()
+                        .map_or(0, |ts| ts.matches.len());
                     self.bfs_find_next(state);
+                    if let Some(ts) = &mut self.tree_search_state {
+                        if ts.matches.len() == prev_count {
+                            ts.boundary_message = Some("no more result");
+                        } else {
+                            ts.boundary_message = None;
+                        }
+                    }
                 } else if let Some(ts) = &mut self.tree_search_state {
+                    ts.boundary_message = None;
                     ts.current_match += 1;
                     let path = ts.matches[ts.current_match].clone();
                     self.expand_to_path(state, &path);
@@ -630,9 +651,12 @@ impl WorkSpace {
             TreeSearchAction::Previous => {
                 if let Some(ts) = &mut self.tree_search_state {
                     if ts.current_match > 0 {
+                        ts.boundary_message = None;
                         ts.current_match -= 1;
                         let path = ts.matches[ts.current_match].clone();
                         self.expand_to_path(state, &path);
+                    } else {
+                        ts.boundary_message = Some("no previous result");
                     }
                 }
             }
@@ -1172,7 +1196,10 @@ impl WorkSpace {
             let no_result = !ts.is_input_mode
                 && ts.matches.is_empty()
                 && (ts.bfs_queue.is_empty() || ts.exhausted);
-            let right = if !ts.matches.is_empty() {
+            let is_warning = no_result || ts.boundary_message.is_some();
+            let right = if let Some(msg) = ts.boundary_message {
+                String::from(msg)
+            } else if !ts.matches.is_empty() {
                 format!("{}/{}", ts.current_match + 1, ts.matches.len())
             } else if no_result {
                 String::from("no result")
@@ -1188,7 +1215,7 @@ impl WorkSpace {
             } else {
                 &display
             };
-            let style = if no_result {
+            let style = if is_warning {
                 Style::new().fg(Color::Rgb(239, 68, 68))
             } else {
                 Style::new()
