@@ -123,7 +123,7 @@ impl WorkSpace {
             KeyCode::Char('j') | KeyCode::Down => {
                 actions.push(NavigationAction::Down(1).into());
             }
-            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' ') => {
+            KeyCode::Char('l') | KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Tab => {
                 actions.push(NavigationAction::Expand.into());
             }
             KeyCode::Char('h') => {
@@ -792,6 +792,10 @@ mod test {
             ),
             (
                 (KeyCode::Char(' '), KeyModifiers::NONE),
+                NavigationAction::Expand,
+            ),
+            (
+                (KeyCode::Tab, KeyModifiers::NONE),
                 NavigationAction::Expand,
             ),
             (
