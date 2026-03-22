@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::BTreeSet, iter::Peekable, slice::Iter};
+use std::{cell::RefCell, collections::BTreeSet};
 
 use crate::container::node::{Index, IndexKind, NodeKind, NodeMeta};
 
@@ -43,6 +43,7 @@ impl WorkTreeNode {
         self.len
     }
 
+    #[cfg(test)]
     pub fn as_tree_string(&self) -> impl Iterator<Item = String> {
         std::iter::once(self.formatted_name(Vec::new()))
             .chain(WorkTreeStringIter::new(self.child.as_deref()))
@@ -417,10 +418,15 @@ impl WorkTreeNode {
     }
 }
 
+#[cfg(test)]
+use std::{iter::Peekable, slice::Iter};
+
+#[cfg(test)]
 pub struct WorkTreeStringIter<'a> {
     stack: Vec<Peekable<Iter<'a, WorkTreeNode>>>,
 }
 
+#[cfg(test)]
 impl<'a> WorkTreeStringIter<'a> {
     fn new(init: Option<&'a [WorkTreeNode]>) -> Self {
         Self {
@@ -433,6 +439,7 @@ impl<'a> WorkTreeStringIter<'a> {
     }
 }
 
+#[cfg(test)]
 impl Iterator for WorkTreeStringIter<'_> {
     type Item = String;
 

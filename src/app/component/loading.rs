@@ -21,7 +21,7 @@ impl Loading {
         Loading(Instant::now())
     }
 
-    fn loading_text(&self) -> Text {
+    fn loading_text(&self) -> Text<'_> {
         let elapsed = (self.0.elapsed().as_secs() % 4) as usize;
         Text::from(String::from_iter(
             "Loading".chars().chain(std::iter::repeat_n('.', elapsed)),
