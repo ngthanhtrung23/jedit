@@ -1,4 +1,4 @@
-use std::{fmt::Display, ops::Deref};
+use std::{fmt::Display, io::Read, ops::Deref};
 
 use indexmap::IndexMap;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
@@ -134,9 +134,52 @@ pub enum NodeMutation<'a> {
     },
 }
 
+/// Strips JSON-insignificant whitespace (spaces, tabs, CRs, LFs) outside of string
+/// literals. `sonic_rs` refuses to parse input over 4 GB (see `sonic_rs::Value`'s 32-bit
+/// tape representation), so pre-stripping padding whitespace lets us load pretty-printed
+/// files that are over that limit only because of indentation/newlines.
+fn strip_insignificant_whitespace(mut reader: impl Read) -> Result<Vec<u8>, std::io::Error> {
+    let mut output = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut buf = [0u8; 64 * 1024];
+
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+
+        for &b in &buf[..n] {
+            if in_string {
+                output.push(b);
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == b'"' {
+                    in_string = false;
+                }
+            } else {
+                match b {
+                    b' ' | b'\t' | b'\n' | b'\r' => {}
+                    b'"' => {
+                        in_string = true;
+                        output.push(b);
+                    }
+                    _ => output.push(b),
+                }
+            }
+        }
+    }
+
+    Ok(output)
+}
+
 impl Node {
     pub fn load(reader: impl std::io::Read) -> Result<Self, LoadError> {
-        let value: serde_json::Value = sonic_rs::from_reader(reader)?;
+        let stripped = strip_insignificant_whitespace(reader)?;
+        let value: serde_json::Value = sonic_rs::from_reader(&stripped[..])?;
         Self::from_serde_json(value).map_err(Into::into)
     }
 
@@ -627,6 +670,38 @@ mod test {
             .to_string_pretty()
             .unwrap();
         assert_eq!(res, RAW_JSON);
+    }
+
+    #[test]
+    fn strip_insignificant_whitespace_drops_padding_outside_strings() {
+        let input = b"{\n  \"a\" :\t1,\r\n  \"b\": [ 1,\n2 ]\n}\n";
+        let stripped = strip_insignificant_whitespace(&input[..]).unwrap();
+        assert_eq!(stripped, br#"{"a":1,"b":[1,2]}"#);
+    }
+
+    #[test]
+    fn strip_insignificant_whitespace_preserves_whitespace_inside_strings() {
+        let input = br#"{ "key" : "hello world\ttab" }"#;
+        let stripped = strip_insignificant_whitespace(&input[..]).unwrap();
+        assert_eq!(stripped, br#"{"key":"hello world\ttab"}"#);
+    }
+
+    #[test]
+    fn strip_insignificant_whitespace_handles_escaped_quotes() {
+        let input = br#"{ "key" : "say \"hi\" to \\" }"#;
+        let stripped = strip_insignificant_whitespace(&input[..]).unwrap();
+        assert_eq!(stripped, br#"{"key":"say \"hi\" to \\"}"#);
+    }
+
+    #[test]
+    fn load_with_extra_whitespace_matches_compact_load() {
+        let padded = "{\n  \"a\"  :   [1,   2,\t3],\n  \"b\" : \"has space\"\n}\n";
+        let compact = r#"{"a":[1,2,3],"b":"has space"}"#;
+
+        let from_padded = Node::load(padded.as_bytes()).unwrap();
+        let from_compact = Node::load(compact.as_bytes()).unwrap();
+
+        assert_eq!(from_padded, from_compact);
     }
 
     #[test]
