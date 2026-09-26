@@ -20,8 +20,8 @@ use crate::{
     app::{
         Action, Actions,
         action::{
-            ConfirmAction, EditJobAction, JobAction, NavigationAction, PreviewNavigationAction,
-            SearchAction, TreeSearchAction, WorkSpaceAction,
+            CommandAction, ConfirmAction, EditJobAction, JobAction, NavigationAction,
+            PreviewNavigationAction, SearchAction, TreeSearchAction, WorkSpaceAction,
         },
         component::confirm_dialog::{
             error_confirm_dialog::ErrorConfirmDialog, text_confirm_dialog::TextConfirmDialog,
@@ -29,7 +29,7 @@ use crate::{
         config::Config,
         math::Op,
     },
-    container::node::{AddNodeKey, Index, IndexKind, Node, NodeMeta},
+    container::node::{AddNodeKey, Index, IndexKind, Node, NodeKind, NodeMeta},
     error::MutationError,
 };
 
@@ -67,6 +67,7 @@ pub struct WorkSpace {
     tree_search_active: bool,
     tree_search_has_results: bool,
     tree_search_state: Option<TreeSearchState>,
+    command_query: Option<String>,
 }
 
 impl WorkSpace {
@@ -87,6 +88,7 @@ impl WorkSpace {
             tree_search_active: false,
             tree_search_has_results: false,
             tree_search_state: None,
+            command_query: None,
         }
     }
 
@@ -121,6 +123,17 @@ impl WorkSpace {
                 KeyCode::Backspace => actions.push(TreeSearchAction::Backspace.into()),
                 KeyCode::Enter => actions.push(TreeSearchAction::Confirm.into()),
                 KeyCode::Esc => actions.push(TreeSearchAction::Cancel.into()),
+                _ => {}
+            }
+            return;
+        }
+
+        if self.command_query.is_some() {
+            match event.code {
+                KeyCode::Char(c) => actions.push(CommandAction::Input(c).into()),
+                KeyCode::Backspace => actions.push(CommandAction::Backspace.into()),
+                KeyCode::Enter => actions.push(CommandAction::Confirm.into()),
+                KeyCode::Esc => actions.push(CommandAction::Cancel.into()),
                 _ => {}
             }
             return;
@@ -240,6 +253,9 @@ impl WorkSpace {
             }
             KeyCode::Char('a') => {
                 actions.push(WorkSpaceAction::Add(ConfirmAction::Request(())).into());
+            }
+            KeyCode::Char(':') => {
+                actions.push(CommandAction::Start.into());
             }
             _ => {}
         }
@@ -381,6 +397,9 @@ impl WorkSpace {
             }
             NavigationAction::TreeSearch(action) => {
                 self.handle_tree_search_action(state, action);
+            }
+            NavigationAction::Command(action) => {
+                self.handle_command_action(state, action);
             }
         }
 
@@ -1001,6 +1020,123 @@ impl WorkSpace {
 }
 
 impl WorkSpace {
+    fn handle_command_action(&mut self, state: &mut WorkSpaceState, action: CommandAction) {
+        match action {
+            CommandAction::Start => {
+                self.command_query = Some(String::new());
+            }
+            CommandAction::Input(c) => {
+                if let Some(query) = &mut self.command_query {
+                    query.push(c);
+                }
+            }
+            CommandAction::Backspace => {
+                if let Some(query) = &mut self.command_query {
+                    query.pop();
+                }
+            }
+            CommandAction::Confirm => {
+                if let Some(query) = self.command_query.take() {
+                    self.execute_command(state, &query);
+                }
+            }
+            CommandAction::Cancel => {
+                self.command_query = None;
+            }
+        }
+    }
+
+    fn execute_command(&mut self, state: &mut WorkSpaceState, input: &str) {
+        let mut parts = input.split_whitespace();
+        match parts.next() {
+            Some("i") => {
+                let arg = parts.next();
+                self.handle_jump_to_index(state, arg);
+            }
+            Some(command) => {
+                self.dialogs.push(Box::new(ErrorConfirmDialog::new(
+                    format!("Unknown command: {command}").into(),
+                )));
+            }
+            None => {}
+        }
+    }
+
+    fn handle_jump_to_index(&mut self, state: &mut WorkSpaceState, arg: Option<&str>) {
+        let Some(arg) = arg else {
+            self.dialogs.push(Box::new(ErrorConfirmDialog::new(
+                "Usage: :i <index>".into(),
+            )));
+            return;
+        };
+
+        let Ok(k) = arg.parse::<usize>() else {
+            self.dialogs.push(Box::new(ErrorConfirmDialog::new(
+                format!("Invalid index: {arg}").into(),
+            )));
+            return;
+        };
+
+        let current_idx = state.list_state.selected().unwrap_or(0);
+
+        let target_idx = match self.resolve_target_array(current_idx) {
+            Ok(idx) => idx,
+            Err(message) => {
+                self.dialogs
+                    .push(Box::new(ErrorConfirmDialog::new(message.into())));
+                return;
+            }
+        };
+
+        self.expand(target_idx);
+
+        let children = self
+            .work_tree_root
+            .direct_children(target_idx)
+            .unwrap_or_default();
+
+        match children.get(k) {
+            Some(&(flat_idx, _)) => {
+                state.list_state.select(Some(flat_idx));
+                self.set_preview_to_selected(state, false);
+            }
+            None => {
+                self.dialogs.push(Box::new(ErrorConfirmDialog::new(
+                    format!("Index out of range (array has {} items)", children.len()).into(),
+                )));
+            }
+        }
+    }
+
+    /// Resolves which array `:i <k>` should index into, given the flat row the cursor is
+    /// currently on: either the array's own row, or one of its direct, unexpanded elements.
+    /// Refuses (rather than guessing) when the current row is expanded, since at that point
+    /// it's ambiguous whether "the current array" means the outer array (whose sibling the
+    /// current row is) or, if the current row is itself an array, its own inner elements.
+    fn resolve_target_array(&mut self, current_idx: usize) -> Result<usize, String> {
+        let current_kind = self.meta_on_index(current_idx).kind;
+        let parent_idx = self.work_tree_root.parent_index(current_idx);
+        let parent_is_array = parent_idx
+            .is_some_and(|idx| matches!(self.meta_on_index(idx).kind, NodeKind::Array));
+
+        let current_is_expanded = self.work_tree_root.is_expanded(current_idx);
+
+        if matches!(current_kind, NodeKind::Array) && !(parent_is_array && current_is_expanded) {
+            return Ok(current_idx);
+        }
+
+        if parent_is_array {
+            if current_is_expanded {
+                return Err("Current item is expanded; collapse it first".to_string());
+            }
+            return Ok(parent_idx.expect("parent_is_array implies parent_idx is Some"));
+        }
+
+        Err("Cursor is not on or inside an array".to_string())
+    }
+}
+
+impl WorkSpace {
     fn handle_save_action(
         &mut self,
         confirm_action: ConfirmAction<()>,
@@ -1103,9 +1239,9 @@ impl StatefulWidget for &WorkSpace {
 
 impl WorkSpace {
     fn render_tree(&self, area: Rect, buf: &mut Buffer, state: &mut WorkSpaceState) {
-        let has_tree_search = self.tree_search_state.is_some();
+        let has_bottom_bar = self.tree_search_state.is_some() || self.command_query.is_some();
 
-        let (block_area, search_bar_y) = if has_tree_search && area.height > 2 {
+        let (block_area, bottom_bar_y) = if has_bottom_bar && area.height > 2 {
             let mut block_area = area;
             block_area.height -= 1;
             (block_area, Some(area.y + area.height - 1))
@@ -1185,7 +1321,19 @@ impl WorkSpace {
                 .position(state.list_state.selected().unwrap_or_default()),
         );
 
-        if let (Some(search_y), Some(ts)) = (search_bar_y, &self.tree_search_state) {
+        if let (Some(bar_y), Some(query)) = (bottom_bar_y, &self.command_query) {
+            let bar_x = area.x;
+            let width = area.width as usize;
+            let left = format!(":{query}█");
+            let padding = width.saturating_sub(left.len());
+            let display = format!("{left}{:padding$}", "");
+            let display = if display.len() > width {
+                &display[..width]
+            } else {
+                &display
+            };
+            buf.set_string(bar_x, bar_y, display, Style::new());
+        } else if let (Some(search_y), Some(ts)) = (bottom_bar_y, &self.tree_search_state) {
             let search_x = area.x;
             let width = area.width as usize;
             let left = if ts.is_input_mode {
@@ -1519,6 +1667,211 @@ mod test {
             (KeyCode::Char('y'), KeyModifiers::NONE),
             vec![WorkSpaceAction::EditError(ConfirmAction::Confirm(true)).into()],
         );
+    }
+
+    #[test]
+    fn jump_to_index_from_array_field_test() {
+        let json = String::from(r#"{"arr": [10, 20, 30, 40, 50]}"#);
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        // Expand root -> selects the "arr" field itself (collapsed array).
+        worktree.test_action(&mut state, NavigationAction::Expand.into());
+
+        worktree.run_command(&mut state, "i 2");
+        assert!(worktree.dialogs.is_empty());
+        assert_eq!(
+            worktree
+                .selected_node(&state)
+                .unwrap()
+                .to_string_pretty()
+                .unwrap(),
+            "30"
+        );
+    }
+
+    #[test]
+    fn jump_to_index_from_unexpanded_sibling_test() {
+        let json = String::from(r#"{"arr": [10, 20, 30, 40, 50]}"#);
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select "arr"
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select arr[0]
+
+        worktree.run_command(&mut state, "i 3");
+        assert!(worktree.dialogs.is_empty());
+        assert_eq!(
+            worktree
+                .selected_node(&state)
+                .unwrap()
+                .to_string_pretty()
+                .unwrap(),
+            "40"
+        );
+    }
+
+    #[test]
+    fn jump_to_index_from_collapsed_nested_array_test() {
+        let json = String::from(r#"{"arr": [[1, 2, 3], [4, 5, 6]]}"#);
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select "arr"
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select arr[0], collapsed
+
+        // Cursor is on arr[0], itself an array, parent is also an array, but arr[0] is not
+        // expanded -> unambiguously targets arr[0]'s own elements.
+        worktree.run_command(&mut state, "i 1");
+        assert!(worktree.dialogs.is_empty());
+        assert_eq!(
+            worktree
+                .selected_node(&state)
+                .unwrap()
+                .to_string_pretty()
+                .unwrap(),
+            "2"
+        );
+    }
+
+    #[test]
+    fn jump_to_index_ambiguous_when_expanded_test() {
+        let json = String::from(r#"{"arr": [{"a": 1}, {"b": 2}]}"#);
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select "arr"
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select arr[0]
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // expand arr[0], select "a"
+        worktree.test_action(&mut state, NavigationAction::Up(1).into()); // back to arr[0], now expanded
+
+        let selected_before = state.list_state.selected();
+
+        worktree.run_command(&mut state, "i 1");
+
+        assert_eq!(worktree.dialogs.len(), 1); // error dialog shown
+        assert_eq!(state.list_state.selected(), selected_before); // selection unchanged
+    }
+
+    #[test]
+    fn jump_to_index_not_in_array_test() {
+        let json = String::from(r#"{"key": "string", "num": 5}"#);
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select "key"
+
+        worktree.run_command(&mut state, "i 0");
+
+        assert_eq!(worktree.dialogs.len(), 1);
+    }
+
+    #[test]
+    fn jump_to_index_out_of_range_test() {
+        let json = String::from(r#"{"arr": [10, 20, 30]}"#);
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select "arr"
+
+        worktree.run_command(&mut state, "i 10");
+
+        assert_eq!(worktree.dialogs.len(), 1);
+        assert_eq!(
+            worktree
+                .selected_node(&state)
+                .unwrap()
+                .to_string_pretty()
+                .unwrap(),
+            "[\n  10,\n  20,\n  30\n]"
+        );
+    }
+
+    #[test]
+    fn command_invalid_input_test() {
+        let json = String::from(r#"{"arr": [10, 20, 30]}"#);
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+        worktree.test_action(&mut state, NavigationAction::Expand.into()); // select "arr"
+
+        for input in ["i", "i abc", "x 3"] {
+            worktree.run_command(&mut state, input);
+            assert_eq!(worktree.dialogs.len(), 1, "expected error dialog for {input:?}");
+            worktree.test_action(&mut state, WorkSpaceAction::ErrorConfirmed);
+            assert!(worktree.dialogs.is_empty());
+        }
+    }
+
+    #[test]
+    fn command_key_binding_test() {
+        let json = String::from("123");
+        let worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+
+        assert_key_event_to_action(
+            &worktree,
+            (KeyCode::Char(':'), KeyModifiers::NONE),
+            vec![CommandAction::Start.into()],
+        );
+    }
+
+    #[test]
+    fn command_input_mode_routes_all_keys_test() {
+        let json = String::from("123");
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        worktree.command_query = Some(String::new());
+
+        // Normal navigation keys are typed as command text, not routed as shortcuts.
+        for (key, expected_char) in [
+            ((KeyCode::Char('q'), KeyModifiers::NONE), 'q'),
+            ((KeyCode::Char('j'), KeyModifiers::NONE), 'j'),
+        ] {
+            assert_key_event_to_action(&worktree, key, vec![CommandAction::Input(expected_char).into()]);
+        }
+
+        // Non-character keys with no explicit handling are ignored.
+        assert_key_event_to_action(&worktree, (KeyCode::Up, KeyModifiers::NONE), Vec::new());
+
+        assert_key_event_to_action(
+            &worktree,
+            (KeyCode::Char('i'), KeyModifiers::NONE),
+            vec![CommandAction::Input('i').into()],
+        );
+        assert_key_event_to_action(
+            &worktree,
+            (KeyCode::Backspace, KeyModifiers::NONE),
+            vec![CommandAction::Backspace.into()],
+        );
+        assert_key_event_to_action(
+            &worktree,
+            (KeyCode::Enter, KeyModifiers::NONE),
+            vec![CommandAction::Confirm.into()],
+        );
+        assert_key_event_to_action(
+            &worktree,
+            (KeyCode::Esc, KeyModifiers::NONE),
+            vec![CommandAction::Cancel.into()],
+        );
+    }
+
+    #[test]
+    fn command_action_typing_and_cancel_test() {
+        let json = String::from("123");
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, CommandAction::Start.into());
+        assert_eq!(worktree.command_query, Some(String::new()));
+
+        worktree.test_action(&mut state, CommandAction::Input('i').into());
+        worktree.test_action(&mut state, CommandAction::Input(' ').into());
+        worktree.test_action(&mut state, CommandAction::Input('1').into());
+        assert_eq!(worktree.command_query, Some(String::from("i 1")));
+
+        worktree.test_action(&mut state, CommandAction::Backspace.into());
+        assert_eq!(worktree.command_query, Some(String::from("i ")));
+
+        worktree.test_action(&mut state, CommandAction::Cancel.into());
+        assert_eq!(worktree.command_query, None);
     }
 
     #[test]
@@ -2520,6 +2873,11 @@ mod test {
             actions.into_vec()
         }
 
+        fn run_command(&mut self, state: &mut WorkSpaceState, input: &str) {
+            self.command_query = Some(input.to_string());
+            self.test_action(state, CommandAction::Confirm.into());
+        }
+
         pub fn write_selected(
             &self,
             worktree_state: &WorkSpaceState,
@@ -2726,6 +3084,21 @@ mod test {
         worktree.test_action(&mut state, TreeSearchAction::Confirm.into());
 
         // Confirmed mode: ?key with match counter
+        assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
+    }
+
+    #[test]
+    fn render_command_bar_test() {
+        let json = r#"{"key":"value","array":[1,2,3]}"#;
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        worktree.test_action(&mut state, CommandAction::Start.into());
+        worktree.test_action(&mut state, CommandAction::Input('i').into());
+        worktree.test_action(&mut state, CommandAction::Input(' ').into());
+        worktree.test_action(&mut state, CommandAction::Input('2').into());
+
+        // Bottom bar shows ":i 2█", tree area shrinks by one row to make room for it.
         assert_snapshot!(stateful_render_to_string(&worktree, &mut state));
     }
 }

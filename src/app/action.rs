@@ -73,6 +73,28 @@ impl From<TreeSearchAction> for WorkSpaceAction {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq))]
+pub enum CommandAction {
+    Start,
+    Input(char),
+    Backspace,
+    Confirm,
+    Cancel,
+}
+
+impl From<CommandAction> for Action {
+    fn from(value: CommandAction) -> Self {
+        NavigationAction::Command(value).into()
+    }
+}
+
+impl From<CommandAction> for WorkSpaceAction {
+    fn from(value: CommandAction) -> Self {
+        NavigationAction::Command(value).into()
+    }
+}
+
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq, Clone, Copy))]
 pub enum NavigationAction {
@@ -88,6 +110,7 @@ pub enum NavigationAction {
     PreviewWindowResize(Op),
     Search(SearchAction),
     TreeSearch(TreeSearchAction),
+    Command(CommandAction),
 }
 
 impl From<NavigationAction> for Action {
