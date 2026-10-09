@@ -627,13 +627,24 @@ impl WorkSpace {
             }
             TreeSearchAction::Confirm => {
                 self.tree_search_active = false;
+                let start_path: Vec<String> = state
+                    .list_state
+                    .selected()
+                    .map(|index| {
+                        self.work_tree_root
+                            .selector(index)
+                            .into_iter()
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if let Some(ts) = &mut self.tree_search_state {
                     ts.is_input_mode = false;
                     if ts.query.is_empty() {
                         self.tree_search_state = None;
                         return;
                     }
-                    ts.bfs_queue.push_back(vec![]);
+                    ts.bfs_queue.push_back(start_path);
                 }
                 self.bfs_find_next(state);
             }
@@ -2974,6 +2985,42 @@ mod test {
         let ts = worktree.tree_search_state.as_ref().unwrap();
         assert_eq!(ts.matches.len(), 2);
         assert_eq!(ts.matches[1], vec!["a", "target"]);
+    }
+
+    #[test]
+    fn tree_search_starts_from_cursor_test() {
+        // {"a":{"target":1},"b":{"target":2}} — cursor on "b" should only find
+        // "b.target", never "a.target", since the search is scoped to the
+        // cursor's subtree.
+        let json = r#"{"a":{"target":1},"b":{"target":2}}"#;
+        let mut worktree = WorkSpace::new(Node::load(json.as_bytes()).unwrap(), Config::default());
+        let mut state = WorkSpaceState::default();
+
+        // Move the cursor onto "b".
+        worktree.test_action(&mut state, NavigationAction::Expand.into());
+        worktree.test_action(&mut state, NavigationAction::Down(1).into());
+        worktree.test_action(&mut state, NavigationAction::Down(1).into());
+        let selector = worktree
+            .work_tree_root
+            .selector(state.list_state.selected().unwrap());
+        assert_eq!(selector, vec!["b"]);
+
+        worktree.test_action(&mut state, TreeSearchAction::Start.into());
+        for c in "target".chars() {
+            worktree.test_action(&mut state, TreeSearchAction::Input(c).into());
+        }
+        worktree.test_action(&mut state, TreeSearchAction::Confirm.into());
+
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.matches.len(), 1);
+        assert_eq!(ts.matches[0], vec!["b", "target"]);
+        assert!(worktree.tree_search_has_results);
+
+        // No more matches: "a.target" is out of scope.
+        worktree.test_action(&mut state, TreeSearchAction::Next.into());
+        let ts = worktree.tree_search_state.as_ref().unwrap();
+        assert_eq!(ts.matches.len(), 1);
+        assert_eq!(ts.boundary_message, Some("no more result"));
     }
 
     #[test]
